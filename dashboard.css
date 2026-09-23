@@ -1,0 +1,330 @@
+/* 状态栏记时器 — 管理页面样式
+   深色 + 卡片, 布局参考手机「屏幕使用时长」. 纯 CSS 画柱状图, 不依赖图表库. */
+
+:root {
+  --bg: #0f1115;
+  --card: #23262d;
+  --card-2: #2b2f37;
+  --line: rgba(255, 255, 255, 0.07);
+  --text: #eceef3;
+  --dim: #9aa0ac;
+  --dim-2: #6d7381;
+  --accent: #2f7cf6;
+  --accent-2: #4f9dff;
+  --up: #ff7a6b;
+  --down: #5ccb8b;
+  --radius: 16px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+body { overflow-y: auto; }
+
+.app {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 18px 16px 34px;
+}
+
+/* ---------- 头部 ---------- */
+.hd {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 2px 14px;
+}
+
+.hd__title {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: .3px;
+}
+
+.hd__status {
+  font-size: 12px;
+  color: var(--dim-2);
+  white-space: nowrap;
+}
+
+/* ---------- 每天 / 每周 ---------- */
+.tabs {
+  display: flex;
+  justify-content: center;
+  gap: 68px;
+  margin-bottom: 16px;
+}
+
+.tab {
+  position: relative;
+  padding: 6px 2px 12px;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.tab.is-active { color: var(--text); font-weight: 600; }
+
+.tab.is-active::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--text);
+}
+
+/* ---------- 卡片 ---------- */
+.card {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 20px 18px 14px;
+  margin-bottom: 22px;
+}
+
+.card__label {
+  font-size: 14px;
+  color: var(--dim);
+  margin-bottom: 6px;
+}
+
+.card__big {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  line-height: 1.25;
+}
+
+.card__cmp {
+  font-size: 14px;
+  color: var(--dim);
+  margin-top: 5px;
+  min-height: 21px;
+}
+
+.card__cmp .up { color: var(--up); }
+.card__cmp .down { color: var(--down); }
+
+/* ---------- 柱状图 ---------- */
+.chart {
+  position: relative;
+  height: 190px;
+  margin: 22px 46px 0 0;   /* 右边留出刻度文字的位置 */
+}
+
+.chart__grid { position: absolute; inset: 0; }
+
+.gridline {
+  position: absolute;
+  left: 0; right: 0;
+  height: 0;
+  border-top: 1px solid var(--line);
+}
+
+.gridline[data-level="0"] { bottom: 0; }
+.gridline[data-level="1"] { bottom: 50%; }
+.gridline[data-level="2"] { top: 0; }
+
+.gridline > span {
+  position: absolute;
+  right: -44px;
+  top: -8px;
+  font-size: 12px;
+  color: var(--dim-2);
+  white-space: nowrap;
+}
+
+.chart__bars {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.col {
+  position: relative;
+  flex: 1 1 0;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  cursor: default;
+}
+
+/* 柱子和轨道都限制最大宽度并居中 —— 每周视图只有 4~7 根,
+   不限制的话每根会被拉成一百多像素宽的大色块.
+   上限由 JS 按柱子数量给 (--bar-w): 柱子少就放宽一点, 免得看着稀疏. */
+.col__inner {
+  position: relative;
+  width: 100%;
+  max-width: var(--bar-w, 30px);
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+
+/* 没数据的时段也画一条淡淡的轨道, 跟参考图一致 */
+.col__track {
+  position: absolute;
+  inset: 0;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.col__fill {
+  position: relative;
+  width: 100%;
+  min-height: 3px;
+  border-radius: 4px;
+  background: linear-gradient(180deg, var(--accent-2), var(--accent));
+  transition: height .35s ease;
+}
+
+.col.is-empty .col__fill { display: none; }
+
+.col:hover .col__track,
+.col.is-hot .col__track { background: rgba(255, 255, 255, 0.09); }
+
+/* 轴标跟着柱子一列一个, 保证对齐 (不是两端对齐那种近似) */
+.axis {
+  display: flex;
+  gap: 3px;
+  margin: 8px 46px 2px 0;
+  font-size: 12px;
+  color: var(--dim-2);
+}
+
+.axis > span {
+  flex: 1 1 0;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* ---------- 应用列表 ---------- */
+.list__hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 10px;
+  color: var(--dim);
+  font-size: 14px;
+}
+
+.list__kind { color: var(--dim-2); }
+
+.list {
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 14px 6px 6px;
+}
+
+/* 列表不单独滚动, 让整页滚 (跟手机那个页面一致, 免得嵌套两层滚动条) */
+.list__body { padding: 0 2px; }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.row:last-child { border-bottom: 0; }
+
+.ic {
+  position: relative;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+.ic > span {
+  font-size: 18px;
+  font-weight: 600;
+  color: hsl(var(--hue, 210) 55% 42%);
+}
+
+.ic > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: 0;
+  transition: opacity .18s ease;
+}
+
+.ic > img.is-ok { opacity: 1; }
+
+.meta { flex: 1 1 auto; min-width: 0; }
+
+.nm {
+  font-size: 16px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sub {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.chev {
+  flex: 0 0 auto;
+  color: var(--dim-2);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.list__empty {
+  padding: 26px 12px 30px;
+  text-align: center;
+  color: var(--dim-2);
+  font-size: 13px;
+}
+
+/* ---------- 悬浮提示 ---------- */
+.tip {
+  position: fixed;
+  z-index: 20;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: #12151b;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+  white-space: nowrap;
+}
+
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, .14);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, .22); }

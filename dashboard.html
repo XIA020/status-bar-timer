@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>屏幕使用时长</title>
+<link rel="icon" href="/static/tray_icon.ico" />
+<link rel="stylesheet" href="dashboard.css" />
+</head>
+<body>
+
+<div class="app">
+
+  <header class="hd">
+    <h1 class="hd__title">屏幕使用时长</h1>
+    <div class="hd__status" id="status">加载中…</div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab is-active" data-kind="day">每天</button>
+    <button class="tab" data-kind="week">每周</button>
+  </nav>
+
+  <main class="wrap">
+
+    <section class="card">
+      <div class="card__label" id="p-label">今天</div>
+      <div class="card__big" id="p-total">—</div>
+      <div class="card__cmp" id="p-cmp"></div>
+
+      <div class="chart" id="p-chart">
+        <div class="chart__grid">
+          <div class="gridline" data-level="2"><span></span></div>
+          <div class="gridline" data-level="1"><span></span></div>
+          <div class="gridline" data-level="0"><span>0 分钟</span></div>
+        </div>
+        <div class="chart__bars" id="p-bars"></div>
+      </div>
+      <div class="axis" id="p-axis"></div>
+    </section>
+
+    <section class="list">
+      <div class="list__hd">
+        <span>统计详情</span>
+        <span class="list__kind">应用</span>
+      </div>
+      <div class="list__body" id="p-apps"></div>
+      <div class="list__empty" id="p-empty" hidden>还没有数据 —— 先正常用一会儿电脑</div>
+    </section>
+
+  </main>
+</div>
+
+<div class="tip" id="tip" hidden></div>
+
+<script src="dashboard.js"></script>
+</body>
+</html>

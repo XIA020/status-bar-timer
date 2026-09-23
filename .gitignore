@@ -1,0 +1,44 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# ---- 打包产物 ----
+build/
+dist/
+*.spec
+# 项目根那份是"已安装"的 exe, 20MB+, 走 Releases 分发, 不进仓库
+/*.exe
+
+# ---- 运行时数据与日志 ----
+# data/ 里是本机真实使用记录 (哪个应用用了多久), 绝对不要提交
+data/
+*.log
+control.json
+hud_pos.txt
+
+# ---- 开发期试错脚本 / 临时产物 ----
+# 这些是开发过程中留下的排错脚本, 不属于项目本身, 本地保留但不上传
+test_*.py
+test_*.ps1
+test_*.log
+test_*.txt
+launch_debug.py
+launch_test.py
+tray_debug.py
+tray_debug2.py
+find_edge.py
+find_hud.py
+read_fg_title.py
+parse_check.py
+brace_scan.ps1
+screenshot.ps1
+tray_icon_tmp.png
+dashboard_*.png
+desktop_before.png
+*_output.txt
+stdout.log
+stderr.log
+serve_only*.log
+exe_*.log
