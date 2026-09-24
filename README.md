@@ -16,11 +16,12 @@ Windows 前台应用计时器：**把"当前应用 + 已用时长"直接嵌进�
 
 ## 下载即用（免安装）
 
-到 **Releases** 页面下载 `状态栏记时器.exe`，放到一个长期保留的目录，双击即可：
+到 **[Releases](https://github.com/XIA020/status-bar-timer/releases)** 页面下载
+`status-bar-timer-v1.0.0.exe`（就是本程序，约 21 MB），放到一个长期保留的目录，双击即可：
 
 - **自包含**：Python 运行时和依赖都打进这一个文件里，机器上不需要装 Python
 - **绿色**：设置、历史数据、图标缓存都写在 exe 旁边的 `data\` 目录，删掉整个目录就干净卸载了
-- **开机自启**：`状态栏记时器.exe --install-autostart` 装，`--uninstall-autostart` 卸
+- **开机自启**：`status-bar-timer-v1.0.0.exe --install-autostart` 装，`--uninstall-autostart` 卸
 - 首次运行如果 Windows SmartScreen 提示「未知发布者」，点「更多信息 → 仍要运行」即可（没做代码签名）
 
 启动后你会看到两样东西：**任务栏里的计时文字**，和**右下角托盘图标**（右键有菜单）。
