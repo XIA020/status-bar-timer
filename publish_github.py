@@ -254,6 +254,29 @@ def create_release(token: str, login: str) -> str:
     return rel.get("html_url", "")
 
 
+def replace_asset(token: str, login: str) -> int:
+    """把 Release 里的 exe 附件换成当前 dist 里构建出来的那份 (同名覆盖)."""
+    step("替换 Release 附件")
+    if not os.path.exists(EXE):
+        raise SystemExit(f"  [失败] 找不到 exe: {EXE}")
+    status, rel = api("GET", f"/repos/{login}/{REPO}/releases/tags/{TAG}", token)
+    if status != 200 or not isinstance(rel, dict):
+        raise SystemExit(f"  [失败] 取 Release 返回 {status}: {str(rel)[:300]}")
+    for a in rel.get("assets", []):
+        if a.get("name") == ASSET_NAME:
+            s2, _ = api("DELETE", f"/repos/{login}/{REPO}/releases/assets/{a['id']}", token)
+            print(f"  删除旧附件 {ASSET_NAME} -> {s2}")
+    with open(EXE, "rb") as f:
+        blob = f.read()
+    q = urllib.parse.urlencode({"name": ASSET_NAME})
+    s3, data = api("POST", f"/repos/{login}/{REPO}/releases/{rel['id']}/assets?{q}",
+                   token, base=UPLOADS, raw=blob, ctype="application/octet-stream")
+    if s3 not in (200, 201):
+        raise SystemExit(f"  [失败] 上传返回 {s3}: {str(data)[:400]}")
+    print(f"  新附件: {data.get('browser_download_url')}  ({len(blob)/1024/1024:.1f} MB)")
+    return 0
+
+
 def main() -> int:
     args = sys.argv[1:]
     login, token = get_credential(debug="--debug-cred" in args)
@@ -261,6 +284,9 @@ def main() -> int:
     if "--check" in args:
         print("\n(--check 模式, 没有做任何改动)")
         return 0
+
+    if "--replace-asset" in args:
+        return replace_asset(token, login)
 
     if not os.path.isdir(os.path.join(ROOT, ".git")):
         raise SystemExit("当前目录不是 git 仓库")

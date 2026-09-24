@@ -141,6 +141,7 @@ class TrayServer:
         self.srv.listen(1)
         self._stop = False
         self.hud_proc = None      # taskbar_hud.py 子进程句柄, 退出时要收掉
+        self.tray_proc = None     # tray.ps1 子进程句柄, 退出时要收掉
         self._last_push = 0.0
         self._loop_thread = threading.Thread(target=self._loop, daemon=True, name="TrayServerLoop")
         self._loop_thread.start()
@@ -293,6 +294,15 @@ class TrayServer:
                 print("[server] taskbar_hud terminated", flush=True)
             except Exception as e:
                 print(f"[server] hud terminate failed: {e}", file=sys.stderr)
+        # 托盘进程同样要显式收掉.
+        # 只靠它自己发现"socket 断了"是不够的: .NET 的 TcpClient.Connected 反映的是
+        # 上一次 I/O 的状态, 对端关闭后它可能一直是 True, 于是进程残留 -> 幽灵托盘图标.
+        if self.tray_proc is not None:
+            try:
+                self.tray_proc.terminate()
+                print("[server] tray terminated", flush=True)
+            except Exception as e:
+                print(f"[server] tray terminate failed: {e}", file=sys.stderr)
         # 给 tracker 1s 收尾, 然后退出
         time.sleep(1.0)
         os._exit(0)
@@ -465,6 +475,7 @@ def main():
     if not args.no_start:
         server.hud_proc = launch_hud(project_dir)
     tray_proc = server.launch_tray()
+    server.tray_proc = tray_proc
 
     print(f"[main] running. port={server.port}", flush=True)
 

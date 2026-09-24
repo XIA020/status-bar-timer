@@ -245,8 +245,18 @@ $lastText = ''  # 缓存上次 tooltip, 避免每次都 toggle Visible (会闪)
 
 $pollTimer.add_Tick({
     try {
-        # 流是否还活着
-        if (-not $client.Connected) {
+        # 流是否还活着.
+        # 只看 $client.Connected 不够: .NET 的 Connected 反映的是"上一次 I/O 的状态",
+        # 对端已经关闭后它可能一直返回 True, 于是托盘进程残留 -> 幽灵托盘图标.
+        # 可靠的判断是: socket 可读(Poll) 但没有可用数据 -> 对端已经关了(读到 0 字节 = EOF).
+        $peerGone = $false
+        try {
+            $peerGone = $client.Client.Poll(0, [System.Net.Sockets.SelectMode]::SelectRead) -and
+                        (-not $stream.DataAvailable)
+        } catch {
+            $peerGone = $true
+        }
+        if ((-not $client.Connected) -or $peerGone) {
             [System.IO.File]::AppendAllText($logPath, "[tray] disconnected, exit`n")
             $pollTimer.Stop()
             $ni.Visible = $false
