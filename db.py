@@ -21,7 +21,7 @@ DB_PATH = os.path.join(paths.app_dir(), "data", "screen_time.db")
 IGNORED_SYSTEM_PROCESSES = (
     "applicationframehost.exe", "shellhost.exe", "shellexperiencehost.exe",
     "startmenuexperiencehost.exe", "searchhost.exe", "searchapp.exe",
-    "textinputhost.exe", "camerapreview.exe",
+    "textinputhost.exe", "camerapreview.exe", "pickerhost.exe",
 )
 
 
@@ -36,7 +36,8 @@ def _visible_session_filter() -> str:
         "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\searchhost.exe' "
         "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\searchapp.exe' "
         "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\textinputhost.exe' "
-        "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\camerapreview.exe'"
+        "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\camerapreview.exe' "
+        "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\pickerhost.exe'"
     )
 
 

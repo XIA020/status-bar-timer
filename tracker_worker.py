@@ -41,7 +41,7 @@ IGNORED_PROCESS_NAMES = {
     # confusing entries such as ShellHost in the screen-time list.
     "applicationframehost.exe", "shellhost.exe", "shellexperiencehost.exe",
     "startmenuexperiencehost.exe", "searchhost.exe", "searchapp.exe",
-    "textinputhost.exe", "camerapreview.exe",
+    "textinputhost.exe", "camerapreview.exe", "pickerhost.exe",
 }
 
 
