@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import argparse
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 NAME = "状态栏记时器"
@@ -38,6 +39,12 @@ EXCLUDES = [
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="构建状态栏记时器")
+    parser.add_argument("--output-dir", help="指定构建产物目录，不覆盖当前运行中的安装版")
+    parser.add_argument("--build-only", action="store_true", help="只构建，不复制到项目根目录")
+    options = parser.parse_args()
+    out_dir = os.path.abspath(options.output_dir) if options.output_dir else os.path.join(ROOT, "dist")
+
     args = [
         sys.executable, "-m", "PyInstaller",
         "--noconfirm", "--clean",
@@ -45,7 +52,7 @@ def main() -> int:
         "--noconsole",
         "--name", NAME,
         "--icon", os.path.join(ROOT, "tray_icon.ico"),
-        "--distpath", os.path.join(ROOT, "dist"),
+        "--distpath", out_dir,
         "--workpath", os.path.join(ROOT, "build"),
         "--specpath", os.path.join(ROOT, "build"),
         # pywebview 的 Assets / WEBVIEW2 加载器
@@ -69,7 +76,6 @@ def main() -> int:
         print("   ", a)
     print("\n开始构建 (几分钟)…\n", flush=True)
 
-    out_dir = os.path.join(ROOT, "dist")
     # Keep dist/data intact: it contains the preview install's position,
     # feature switches, and local test history. PyInstaller replaces its exe
     # artifact; deleting the whole directory would reset those user settings.
@@ -88,7 +94,7 @@ def main() -> int:
     print(f"\n[成功] {exe}")
     print(f"       大小 {mb:.1f} MB")
 
-    if "--build-only" in sys.argv[1:]:
+    if options.build_only or options.output_dir:
         return 0
 
     # 顺手放到项目根目录一份: 那里是"已安装"位置 —— 自启动和桌面快捷方式都指向它,

@@ -264,7 +264,7 @@ def query_today_exe_paths() -> dict:
     today, tomorrow = _today_range()
     with _connect() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT process, MAX(exe_path) AS exe_path
             FROM sessions
             WHERE start_ts >= ? AND start_ts < ? AND {_visible_session_filter()}
