@@ -145,6 +145,8 @@ class TrayServer:
         self.hud_proc = None      # taskbar_hud.py 子进程句柄, 退出时要收掉
         self.tray_proc = None     # tray.ps1 子进程句柄, 退出时要收掉
         self._last_push = 0.0
+        self.updater = None
+        self.autostart_notice = ""
         self._loop_thread = threading.Thread(target=self._loop, daemon=True, name="TrayServerLoop")
         self._loop_thread.start()
 
@@ -242,6 +244,10 @@ class TrayServer:
                     try:
                         state = _read_state()
                         state["features"] = app_settings.get_settings()
+                        state["autostart"] = autostart_enabled()
+                        state["autostart_notice"] = self.autostart_notice
+                        if self.updater is not None:
+                            state["update"] = self.updater.menu_state()
                         # 加 type 字段以兼容 tray.ps1 协议
                         state["type"] = "state"
                         line = (json.dumps(state, ensure_ascii=False) + "\n").encode("utf-8")
@@ -273,8 +279,22 @@ class TrayServer:
                 print(f"[server] feature {feature} -> {enabled}", flush=True)
             else:
                 print(f"[server] invalid feature command: {msg!r}", file=sys.stderr)
+        elif cmd == "set_autostart" and isinstance(msg.get("enabled"), bool):
+            try:
+                (install_autostart if msg["enabled"] else uninstall_autostart)()
+                self.autostart_notice = ""
+            except OSError as e:
+                print(f"[autostart] registry update failed: {e}", file=sys.stderr, flush=True)
+                self.autostart_notice = "未能修改开机自启，请稍后重试。"
         elif cmd == "quit":
-            self._quit()
+            if self.updater is None or self.updater.menu_state()["phase"] != "downloading":
+                self._quit()
+        elif self.updater is not None and cmd == "check_update":
+            self.updater.check(manual=True)
+        elif self.updater is not None and cmd == "dismiss_update":
+            self.updater.dismiss(msg.get("version"))
+        elif self.updater is not None and cmd == "install_update":
+            self.updater.install(msg.get("version"))
         else:
             print(f"[server] unknown cmd: {cmd}", file=sys.stderr)
 
@@ -412,6 +432,17 @@ AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_NAME = "ScreenTimeTracker"
 
 
+def autostart_enabled() -> bool:
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY) as key:
+            command, _ = winreg.QueryValueEx(key, AUTOSTART_NAME)
+            return bool(command)
+    except OSError:
+        return False
+
+
 def _autostart_command() -> str:
     """要写进注册表 Run 值的命令行.
 
@@ -458,8 +489,9 @@ def main():
     if "--uninstall-autostart" in sys.argv:
         sys.exit(uninstall_autostart())
 
-    # 打包后 _MEIPASS 是临时目录 (退出即删), 日志和数据必须落到 exe 旁边
+    # 打包后的用户数据和日志集中存放在 LocalAppData。
     project_dir = paths.app_dir()
+    os.makedirs(project_dir, exist_ok=True)
     project_log_dir = project_dir
     stdout_log = os.path.join(project_log_dir, "app_stdout.log")
     stderr_log = os.path.join(project_log_dir, "app_stderr.log")
@@ -469,7 +501,8 @@ def main():
         sys.stdout = open(stdout_log, "a", encoding="utf-8", buffering=1)
         sys.stderr = open(stderr_log, "a", encoding="utf-8", buffering=1)
     except Exception as e:
-        sys.__stderr__.write(f"[main] redirect failed: {e}\n")
+        if sys.__stderr__ is not None:
+            sys.__stderr__.write(f"[main] redirect failed: {e}\n")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-start", action="store_true")
@@ -484,6 +517,7 @@ def main():
         print(f"[main] single-instance lock failed: {e}", file=sys.stderr, flush=True)
         return
 
+    paths.migrate_legacy_data()
     os.makedirs(DATA_DIR, exist_ok=True)
     db.init_db()
 
@@ -494,6 +528,10 @@ def main():
         launch_tracker(project_dir)
 
     server = TrayServer(project_dir)
+    if paths.is_frozen() and not args.no_start:
+        from updater import Updater
+
+        server.updater = Updater(server._find_powershell, server._quit)
     if not args.no_start:
         server.hud_proc = launch_hud(project_dir)
     tray_proc = server.launch_tray()
@@ -511,6 +549,8 @@ def main():
             time.sleep(1.0)
             if server._stop:
                 break
+            if server.updater is not None:
+                server.updater.check()
             now = time.monotonic()
             if now < next_tray_check:
                 continue

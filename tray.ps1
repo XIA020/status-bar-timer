@@ -80,6 +80,11 @@ function Send-FeatureCommand($feature, $enabled) {
         Write-Host "[tray] sent: $msg"
     } catch { Write-Host "[tray] feature update failed: $_" }
 }
+function Send-UpdateCommand($cmd, $version) {
+    try {
+        $writer.WriteLine((@{ cmd = $cmd; version = $version } | ConvertTo-Json -Compress))
+    } catch { Write-Host "[tray] update command failed: $_" }
+}
 
 # ---- NotifyIcon + menu ----
 # tray.ps1 由 PowerShell 托盘进程运行；MainModule 指向 powershell.exe，不能用它取图标。
@@ -88,7 +93,7 @@ $iconPath = Join-Path $PSScriptRoot 'tray_icon.ico'
 $icon = New-Object System.Drawing.Icon -ArgumentList $iconPath
 $ni = New-Object System.Windows.Forms.NotifyIcon
 $ni.Icon = $icon
-$ni.Text = "状态栏计时器"
+$ni.Text = "任务栏计时器"
 $ni.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
@@ -121,6 +126,68 @@ $featureMenu.add_DropDownOpening({
     $script:syncingFeatures = $false
 })
 
+$script:updateState = $null
+$script:updateDialogOpen = $false
+$script:promptedUpdate = ''
+$script:lastUpdateNotice = ''
+
+function Show-OptionalUpdate($update) {
+    if ($script:updateDialogOpen -or $update.phase -ne 'available' -or -not $update.version) { return }
+    $script:updateDialogOpen = $true
+    $script:promptedUpdate = $update.version
+    $form = New-Object System.Windows.Forms.Form
+    try {
+        $form.Text = '可选更新'
+        $form.Icon = $icon
+        $form.StartPosition = 'CenterScreen'
+        $form.FormBorderStyle = 'FixedDialog'
+        $form.ClientSize = New-Object System.Drawing.Size(400, 146)
+        $form.MaximizeBox = $false
+        $form.MinimizeBox = $false
+        $label = New-Object System.Windows.Forms.Label
+        $label.SetBounds(20, 20, 360, 68)
+        $label.Text = "新版本 $($update.version) 可用（当前 $($update.current)）。`r`n点击「立即更新」后将下载新版并重新打开软件。"
+        $install = New-Object System.Windows.Forms.Button
+        $install.SetBounds(166, 99, 104, 30)
+        $install.Text = '立即更新'
+        $install.DialogResult = 'Yes'
+        $later = New-Object System.Windows.Forms.Button
+        $later.SetBounds(280, 99, 100, 30)
+        $later.Text = '稍后'
+        $later.DialogResult = 'Cancel'
+        $form.Controls.AddRange(@($label, $install, $later))
+        $form.CancelButton = $later
+        $form.ActiveControl = $later
+        if ($form.ShowDialog() -eq [System.Windows.Forms.DialogResult]::Yes) {
+            Send-UpdateCommand 'install_update' $update.version
+        } else {
+            Send-UpdateCommand 'dismiss_update' $update.version
+        }
+    } finally {
+        $form.Dispose()
+        $script:updateDialogOpen = $false
+    }
+}
+
+$miUpdate = $menu.Items.Add("检查更新")
+$miUpdate.Visible = $false
+$miUpdate.add_Click({
+    if ($script:updateState.phase -eq 'available') {
+        Show-OptionalUpdate $script:updateState
+    } else {
+        Send-Command 'check_update'
+    }
+})
+
+$miAutostart = $menu.Items.Add("开机自启")
+$miAutostart.CheckOnClick = $true
+$script:lastAutostartNotice = ''
+$miAutostart.add_Click({
+    try {
+        $writer.WriteLine((@{cmd = 'set_autostart'; enabled = $miAutostart.Checked} | ConvertTo-Json -Compress))
+    } catch { Write-Host "[tray] autostart command failed: $_" }
+})
+
 $miQuit = $menu.Items.Add("退出程序")
 $miQuit.add_Click({ Write-Host "[tray] menu: quit"; Send-Command 'quit' })
 
@@ -134,7 +201,7 @@ $ni.add_MouseDoubleClick({
 })
 
 # ---- Initial balloon tip ----
-$ni.BalloonTipTitle = "状态栏计时器"
+$ni.BalloonTipTitle = "任务栏计时器"
 $ni.BalloonTipText = "右键托盘图标可打开功能开关；双击打开管理页面。"
 $ni.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info
 $ni.ShowBalloonTip(5000)
@@ -271,6 +338,7 @@ $logPath = Join-Path $PSScriptRoot 'tray_stdout.log'
 $pollTimer = New-Object System.Windows.Forms.Timer
 $pollTimer.Interval = 250  # 4 Hz, 比 app.py 推 2 Hz 频繁点
 $pollBuf = ''
+$utf8Decoder = [System.Text.Encoding]::UTF8.GetDecoder()
 $lastText = ''  # 缓存上次 tooltip, 避免每次都 toggle Visible (会闪)
 
 $pollTimer.add_Tick({
@@ -308,7 +376,9 @@ $pollTimer.add_Tick({
             $ms.Dispose()
             if ($bytes.Length -eq 0) { return }
             # UTF-8 解码 (app.py 用 UTF-8 NO BOM 写)
-            $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+            $chars = New-Object char[] ($bytes.Length + 2)
+            $nChars = $utf8Decoder.GetChars($bytes, 0, $bytes.Length, $chars, 0, $false)
+            $text = [string]::new($chars, 0, $nChars)
             $pollBuf += $text
 
             # 按 \n 切完整行
@@ -327,6 +397,31 @@ $pollTimer.add_Tick({
                 }
 
                 if ($msg.type -eq 'state') {
+                    $miAutostart.Checked = [bool]$msg.autostart
+                    if ($msg.autostart_notice -and $msg.autostart_notice -ne $script:lastAutostartNotice) {
+                        $ni.ShowBalloonTip(4500, '开机自启', $msg.autostart_notice, 'Warning')
+                    }
+                    $script:lastAutostartNotice = $msg.autostart_notice
+                    if ($msg.update) {
+                        $script:updateState = $msg.update
+                        $update = $script:updateState
+                        $miUpdate.Visible = $true
+                        $miUpdate.Enabled = $update.phase -notin @('checking', 'downloading')
+                        $miQuit.Enabled = $update.phase -ne 'downloading'
+                        $miUpdate.Text = switch ($update.phase) {
+                            'checking' { '正在检查更新…' }
+                            'downloading' { '正在下载更新…' }
+                            'available' { "可选更新 $($update.version)" }
+                            default { '检查更新' }
+                        }
+                        if ($update.notice -and $update.notice -ne $script:lastUpdateNotice) {
+                            $ni.ShowBalloonTip(4500, '可选更新', $update.notice, 'Info')
+                        }
+                        $script:lastUpdateNotice = $update.notice
+                        if ($update.prompt -and $update.version -ne $script:promptedUpdate) {
+                            Show-OptionalUpdate $update
+                        }
+                    }
                     $st = if ($msg.paused) { '已暂停' } elseif (-not $msg.running) { '未运行' } else { '正在计时' }
                     if ($msg.features) {
                         $script:lastFeatures = @{
@@ -344,7 +439,7 @@ $pollTimer.add_Tick({
                             $text2 += " - $w"
                         }
                     } else {
-                        $text2 = "状态栏计时器（$st）"
+                        $text2 = "任务栏计时器（$st）"
                     }
                     if ($text2.Length -gt 127) { $text2 = $text2.Substring(0, 124) + '...' }
                     if ($text2 -ne $script:lastText) {

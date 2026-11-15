@@ -1,4 +1,4 @@
-// 状态栏记时器 — 管理页面前端
+// 任务栏计时器 — 管理页面前端
 // 直接 fetch dashboard.py 起的本机 HTTP server (pywebview 6.2.1 的 js_api 在 winforms 下不可用).
 // 柱状图是纯 DOM 画的, 不依赖任何图表库.
 

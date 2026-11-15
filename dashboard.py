@@ -21,6 +21,7 @@ import db
 import paths
 import app_settings
 from single_instance import acquire_instance_lock
+from release_info import APP_NAME
 
 HTML_PATH = os.path.join(paths.res_dir(), "dashboard.html")
 HTTP_PORT = None  # set after server starts
@@ -295,7 +296,7 @@ def main():
 
     # 启动 pywebview 窗口 (通过 HTTP server 加载, 不是 file://, 避免 mixed-content 阻止 fetch)
     window = webview.create_window(
-        title="状态栏记时器",
+        title=APP_NAME,
         url=f"http://{host}:{port}/",
         width=520,
         height=860,
@@ -339,7 +340,7 @@ def _focus_existing_window():
     # The first dashboard process can hold the mutex briefly before WebView
     # creates its native window. Wait for it, then restore and foreground it.
     for _ in range(40):
-        hwnd = user32.FindWindowW(None, "状态栏记时器")
+        hwnd = user32.FindWindowW(None, APP_NAME)
         if hwnd:
             user32.ShowWindow(hwnd, 9)  # SW_RESTORE
             user32.BringWindowToTop(hwnd)

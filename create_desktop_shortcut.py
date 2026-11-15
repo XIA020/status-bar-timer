@@ -1,4 +1,4 @@
-"""create_desktop_shortcut.py — 在桌面创建「状态栏记时器」快捷方式.
+"""create_desktop_shortcut.py — 在桌面创建「任务栏计时器」快捷方式.
 
 直接用 pywin32 的 WScript.Shell COM 创建 .lnk, 不再拼 PowerShell 命令串
 (路径含中文, 拼字符串过 PowerShell 容易出现编码问题).
@@ -12,11 +12,13 @@ import sys
 
 import win32com.client
 
+from release_info import APP_NAME
+
 PROJ = os.path.dirname(os.path.abspath(__file__))
-EXE = os.path.join(PROJ, "状态栏记时器.exe")
+EXE = os.path.join(PROJ, f"{APP_NAME}.exe")
 START_CMD = os.path.join(PROJ, "start.cmd")
 ICON = os.path.join(PROJ, "tray_icon.ico")
-NAME = "状态栏记时器.lnk"
+NAME = f"{APP_NAME}.lnk"
 
 
 def desktop_dir() -> str:
@@ -49,7 +51,7 @@ def main() -> int:
     sc.TargetPath = target
     sc.WorkingDirectory = PROJ
     sc.WindowStyle = 7          # 最小化启动 (exe 是无控制台程序, 这个只影响 cmd 模式)
-    sc.Description = "状态栏记时器 - 任务栏计时 + 屏幕使用时长"
+    sc.Description = f"{APP_NAME} - 屏幕使用时长"
     if os.path.exists(ICON):
         sc.IconLocation = ICON
     else:

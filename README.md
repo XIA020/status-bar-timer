@@ -1,4 +1,4 @@
-# 状态栏记时器
+# 任务栏计时器
 
 Windows 前台应用计时器：**把"当前应用 + 已用时长"直接嵌进任务栏**，自动记录，按日 / 周 / 月汇总，现代 Web UI。
 
@@ -16,11 +16,14 @@ Windows 前台应用计时器：**把"当前应用 + 已用时长"直接嵌进�
 
 ## 下载即用（免安装）
 
-到 **[Releases](https://github.com/XIA020/status-bar-timer/releases/latest)** 页面下载最新版 `状态栏记时器.exe`，放到一个长期保留的目录，双击即可：
+到 **[Releases](https://github.com/XIA020/status-bar-timer/releases/latest)** 页面下载「任务栏计时器」的 Windows x64 附件（文件名形如 `status-bar-timer-v1.2.0.exe`），放到一个长期保留的目录，双击即可。
+
+已在 Windows 11 x64 24H2 实测。Windows 10 x64（1809 及以上）保留兼容路径，仍待实测。
 
 - **自包含**：Python 运行时和依赖都打进这一个文件里，机器上不需要装 Python
-- **绿色**：设置、历史数据、图标缓存都写在 exe 旁边的 `data\` 目录，删掉整个目录就干净卸载了
-- **开机自启**：`状态栏记时器.exe --install-autostart` 装，`--uninstall-autostart` 卸
+- **数据**：打包版将设置、历史和缓存保存在 `%LOCALAPPDATA%\StatusBarTimer\data`，日志也在 `StatusBarTimer` 目录。首次升级时，如果该目录还没有数据，会从 exe 旁的旧 `data\` 复制历史、设置和位置。
+- **开机自启**：右键托盘图标，勾选或取消「开机自启」。首次运行默认关闭。
+- **更新**：程序启动后会检查 GitHub Releases，持续运行时每 24 小时再检查一次。点击「立即更新」后，程序会下载并校验新版、替换 EXE 和重新打开；选「稍后」可从托盘菜单重新打开更新提示。已有 v1.1.1 或更早版本的用户需要先手动下载一次新版。
 - 首次运行如果 Windows SmartScreen 提示「未知发布者」，点「更多信息 → 仍要运行」即可（没做代码签名）
 
 启动后你会看到两样东西：**任务栏里的计时文字**，和**右下角托盘图标**（右键有菜单）。
@@ -39,7 +42,7 @@ Windows 前台应用计时器：**把"当前应用 + 已用时长"直接嵌进�
 
 ### 可选任务栏功能
 
-右下角系统托盘图标的右键菜单可分别开关以下功能，设置会保存在程序旁边的 `data\hud_config.json`：
+右下角系统托盘图标的右键菜单可分别开关以下功能，设置保存在 `data\hud_config.json`。打包版的 `data` 位于 `%LOCALAPPDATA%\StatusBarTimer`：
 
 - **代理节点位置**：读取 Windows 系统代理出口国家。仅在系统代理启用时访问 Cloudflare；代理服务器会看到请求，程序只保存国家代码。
 - **鼠标电量与使用时间**：尝试读取 HECATE G3M Pro。其他鼠标不会显示电量；关闭后停止 HID 查询。
@@ -66,7 +69,7 @@ app.py (主进程)
 - `data/control.json` ← app.py 写（`paused` / `shutdown`），tracker_worker 和 HUD 都读它
 - `data/state.json` → tracker_worker 写，HUD 读它来刷新文字
 - `data/battery.json` → tracker_worker 内的独立低频线程写；仅识别 `320F:706B` 有线设备和 `320F:706E` 2.4G 接收器，HUD 在排行后显示鼠标图标及切换到 2.4G 后经过时间、电池图标下方居中的百分比；充电时在电池图标中央显示闪电；连续 20 秒没有新结果就隐藏，避免显示过期电量
-- `data/proxy_location.json` → 代理位置线程仅在 Windows 系统代理已启用时访问 Cloudflare trace，读取请求的国家代码；Cloudflare 会看到该代理出口 IP，本程序只保存国家代码。HUD 用对应国旗占据原固定状态图标位置，代理关闭、请求失败或国家暂不支持绘制时回退原状态图标。不会绕过代理直连；定位依据是代理出口请求地区，可能与服务商给节点标注的地区不一致
+- `data/proxy_location.json` → 代理位置线程仅在 Windows 系统代理已启用时访问 Cloudflare trace，读取请求的国家代码。Cloudflare 会看到该代理出口 IP，本程序只保存国家代码。只有取得可绘制的国旗时，HUD 才为国旗留位置。定位依据是代理出口请求地区，可能与服务商给节点标注的地区不一致。
 - 电量查询只发送 `0x1A / 0x06` 只读命令，不使用鼠标配置或写入命令；充电状态仅按已知状态码显示，未知值不猜测
 - 应用友好名称按 exe 路径做最多 256 项的缓存，避免每次 250 毫秒采样都重新读取程序版本信息。
 
@@ -94,8 +97,7 @@ app.py (主进程)
 5. 监听 `TaskbarCreated` → explorer 崩溃重启后自动重新停靠；另有 5 秒一次的健康检查兜底
 
 HUD 只显示一条按今日累计时长严格降序的排行，每个应用只出现一次，配有圆角图标和时长；
-正在使用的应用图标带绿色小点。左侧固定状态位在计时中显示绿色标记，空闲或暂停时显示计时器图标，
-因此切换应用时排行图标不会换位。应用切换由采集器每 250 毫秒检查一次，HUD 同样每 250 毫秒刷新。
+正在使用的应用图标带绿色小点。排行左侧仅在有国旗可显示时留出位置。应用切换由采集器每 250 毫秒检查一次，HUD 同样每 250 毫秒刷新。
 排行是**逐项试放**的，空闲宽度不足时只显示放得下的项目。
 
 这样它自动跟随任务栏：任务栏自动隐藏、改分辨率、换缩放、explorer 重启都能跟上。
@@ -128,7 +130,7 @@ HUD 只显示一条按今日累计时长严格降序的排行，每个应用只�
 | `top_apps_count` | `3` | 最多列几个（放不下会自动少列） |
 | `top_apps_include_current` | `true` | 完整排行包含当前应用，切换前台时图标集合不变 |
 | `top_apps_time_format` | `"compact"` | `compact` = `12m` / `2h3m`；`long` = `12m 30s` / `2h 3m` |
-| `top_apps_gap` / `top_apps_item_sep` | `"   "` / `" · "` | 状态位与排行之间 / 排行项之间的分隔 |
+| `top_apps_gap` / `top_apps_item_sep` | `"   "` / `" · "` | 国旗与排行之间 / 排行项之间的分隔 |
 | `dim_alpha` | `150` | 排行文字的不透明度（0-255），越低越淡 |
 | `drag_threshold_px` | `4` | 光标移动超过这个距离才算拖动 |
 | `enabled` | `true` | 设成 `false` 会让 HUD 自己退出 |
@@ -186,9 +188,9 @@ HUD 只显示一条按今日累计时长严格降序的排行，每个应用只�
 **方式一：直接用 exe（推荐）**
 
 ```powershell
-# 下载 Releases 里的 状态栏记时器.exe, 然后:
-.\状态栏记时器.exe --install-autostart     # 装开机自启
-.\状态栏记时器.exe --uninstall-autostart   # 卸载
+# 以下为 v1.2.0 下载附件示例:
+.\status-bar-timer-v1.2.0.exe --install-autostart    # 开启自启
+.\status-bar-timer-v1.2.0.exe --uninstall-autostart  # 关闭自启
 ```
 
 **方式二：从源码跑**
@@ -204,7 +206,7 @@ py -3.13 -m venv .venv
 **自己打包 exe**（需要 PyInstaller）：
 
 ```powershell
-.\.venv\Scripts\python.exe build_exe.py --build-only  # 仅生成 dist\状态栏记时器.exe
+.\.venv\Scripts\python.exe build_exe.py --build-only  # 仅生成 dist\任务栏计时器.exe
 ```
 
 打包后仍是**多进程**：子进程用同一个 exe 加 `--role tracker|hud|dashboard` 起来
@@ -221,7 +223,7 @@ py -3.13 -m venv .venv
 
 ## 开机自启
 
-**exe 方式（推荐）**：见上面「安装」里的 `--install-autostart`。
+**EXE 方式**：右键托盘图标，勾选或取消「开机自启」。命令行仍可使用 `--install-autostart` 和 `--uninstall-autostart`。
 
 **源码方式**：
 
@@ -231,12 +233,12 @@ py -3.13 -m venv .venv
 ```
 
 注册表项：`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\ScreenTimeTracker`
-（键名沿用了旧名，程序显示名已改成"状态栏记时器"。）
+（键名沿用了旧名，程序显示名已改成"任务栏计时器"。）
 
 ## 项目结构
 
 ```
-状态栏记时器/
+任务栏计时器/
 ├── app.py                  # 主程序: TCP server + 拉起各子进程 + 打包后的角色分发
 ├── paths.py                # 资源目录/数据目录/子进程命令行的统一解析 (源码 & 打包通用)
 ├── tracker_worker.py       # 采集前台窗口 → SQLite + state.json (含"今日累计"基数)
@@ -342,9 +344,7 @@ CREATE INDEX idx_sessions_process ON sessions(process);
     就是 exe 本身，再想用「pythonw 脚本」那套就起不来了。子进程那边先按角色分发再进各自的 `main()`
     （`app.py` 的 `_dispatch_frozen_role`），并把 `--role xxx` 从 `sys.argv` 里摘掉，
     否则子模块的 `argparse` 会报未知参数。
-17. **`_MEIPASS` 是临时目录（退出即删），只能放只读资源。** 日志、`data/`、图标缓存必须写到
-    **exe 旁边**（`paths.app_dir()`），否则每次退出数据就没了。把 exe 放在项目目录里跑，
-    还能直接复用源码版的历史数据。
+17. **`_MEIPASS` 是临时目录（退出即删），只放打包资源。** 通过 `paths.app_dir()` 解析可写目录。打包版使用 `%LOCALAPPDATA%\StatusBarTimer`，源码运行使用项目目录。
 18. **URL 查询串里不要放非 ASCII。** 实测 `?exe=D:\抖音\douyin\douyin.exe` 到 bottle 那层解码
     出来是另一个字符串（`isdir` 直接 False，图标抽不到）；改成 base64url 传就没有任何编码问题，
     顺带也不把用户的真实路径暴露在 URL 里。**任何进程间/HTTP 传路径的场合都优先编码。**

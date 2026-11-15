@@ -44,6 +44,7 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 import paths
 from download_progress import DownloadProgress, speed_label
+from taskbar_uia import TaskbarControls
 
 # ==================== 路径 ====================
 ROOT = paths.app_dir()
@@ -552,6 +553,7 @@ class TaskbarHud:
         self._selftest = False
         self._icon_cache: dict = {}
         self._download_progress = DownloadProgress()
+        self._taskbar_controls = TaskbarControls() if sys.getwindowsversion().build >= 22000 else None
 
     # ---------- DPI ----------
     def _dpi_scale(self) -> float:
@@ -662,7 +664,7 @@ class TaskbarHud:
 
     # ---------- 任务栏几何 ----------
     def _occupied_ranges(self):
-        """收集任务栏上真正占位的东西 (屏幕坐标).
+        """收集已占用区间 (屏幕坐标)，无法确定时返回 None。
 
         递归走下 3 层: Win11 上任务按钮区有时是 ReBarWindow32 的直接子窗口,
         有时藏在合成层里面, 只扫一层会漏.
@@ -676,15 +678,17 @@ class TaskbarHud:
         """
         r = wintypes.RECT()
         if not user32.GetWindowRect(self.taskbar, ctypes.byref(r)):
-            return []
+            return None
         tb_left, tb_right = r.left, r.right
         tb_width = tb_right - tb_left
         if tb_width <= 0:
-            return []
+            return None
         limit = tb_width * 0.9
         occupied = []
+        native_tray = False
 
         def walk(parent, depth):
+            nonlocal native_tray
             if depth > 3:
                 return
             child = user32.GetWindow(parent, GW_CHILD)
@@ -694,11 +698,24 @@ class TaskbarHud:
                     if user32.GetWindowRect(child, ctypes.byref(cr)):
                         w = cr.right - cr.left
                         if 0 < w < limit:
-                            occupied.append((cr.left, cr.right))
+                            cls = ctypes.create_unicode_buffer(64)
+                            user32.GetClassNameW(child, cls, len(cls))
+                            if cls.value == "TrayNotifyWnd":
+                                native_tray = True
+                                occupied.append((cr.left, tb_right))
+                            else:
+                                occupied.append((cr.left, cr.right))
                     walk(child, depth + 1)
                 child = user32.GetWindow(child, GW_HWNDNEXT)
 
         walk(self.taskbar, 1)
+        if self._taskbar_controls is not None:
+            controls = self._taskbar_controls.read(self.taskbar, r)
+            if controls is not None:
+                occupied.extend(controls)
+            elif not native_tray:
+                # Win11 合成任务栏可能把通知区报告为零宽。此时空闲位置未知。
+                return None
         return occupied
 
     def _free_ranges(self):
@@ -711,7 +728,10 @@ class TaskbarHud:
             return []
         gap = self._px("gap_px", 10)
 
-        occupied = [(s - gap, e + gap) for s, e in self._occupied_ranges()]
+        ranges = self._occupied_ranges()
+        if ranges is None:
+            return []
+        occupied = [(s - gap, e + gap) for s, e in ranges]
 
         # 合并重叠区间 (按起点排序后线性扫)
         merged = []
@@ -743,17 +763,15 @@ class TaskbarHud:
         结果右边空档比内容窄 1px 就整体跳到任务栏左半去 —— 内容一宽就"乱跳".
         现在改成: 位置只由 anchor 决定 (默认永远贴托盘左边), 空间不够就少显示几项.
         """
+        min_w = self._px("min_width_px", 60)
+        ranges = [r for r in ranges if r[1] - r[0] >= min_w]
         if not ranges:
             return None
         anchor = str(self.cfg.get("anchor", "right")).lower()
-        min_w = self._px("min_width_px", 60)
 
         if anchor == "manual" and self._manual_x is not None:
             mx = int(self._manual_x)
-            for r in ranges:
-                if r[0] - min_w <= mx <= r[1]:
-                    return r
-            return max(ranges, key=lambda r: r[1] - r[0])
+            return min(ranges, key=lambda r: abs(max(r[0], min(mx, r[1] - min_w)) - mx))
 
         if anchor == "left":
             cand = ranges[0]
@@ -762,9 +780,6 @@ class TaskbarHud:
         else:                       # right / 其它一律当 right
             cand = ranges[-1]
 
-        # 目标段窄到连最小宽度都放不下时, 退到最长的那段
-        if (cand[1] - cand[0]) < min_w:
-            cand = max(ranges, key=lambda r: r[1] - r[0])
         return cand
 
     def _anchor_x(self, rng, width: int):
@@ -911,13 +926,16 @@ class TaskbarHud:
             n = n[:mx - 1] + "…"
         return n or "?"
 
-    def _build_segments(self, st: dict, limit_px: int, downloads=(), height=0):
-        """拼出今日累计排行；固定的状态位宽度让空闲标记切换时榜单不位移。"""
+    def _flag_slot(self, country: str | None) -> int:
+        return (max(16, self._px("active_icon_size_px", 18))
+                + self._px("active_icon_gap_px", 5)) if country else 0
+
+    def _build_segments(self, st: dict, limit_px: int, downloads=(), height=0, country=None):
+        """拼出今日累计排行，为实际显示的国旗留出空间。"""
         pad = self._px("padding_x_px", 10)
         avail = max(20, limit_px - pad * 2)
-        slot = max(16, self._px("active_icon_size_px", 18)) + self._px("active_icon_gap_px", 5)
         segments = []
-        width = slot
+        width = self._flag_slot(country)
 
         apps = st.get("top_apps") or []
 
@@ -925,7 +943,7 @@ class TaskbarHud:
             count = max(1, int(self.cfg.get("top_apps_count", 3)))
         except Exception:
             count = 3
-        gap = str(self.cfg.get("top_apps_gap", "   "))
+        gap = str(self.cfg.get("top_apps_gap", "   ")) if country else ""
         sep = str(self.cfg.get("top_apps_item_sep", " · "))
         use_long = str(self.cfg.get("top_apps_time_format", "compact")).lower() == "long"
 
@@ -1000,7 +1018,8 @@ class TaskbarHud:
             else:
                 break
         if items:
-            segments.append((gap, self._text_color_rgb, alpha))
+            if gap:
+                segments.append((gap, self._text_color_rgb, alpha))
             segments.extend(items)
             width += self._measure(gap) + items_width
 
@@ -1104,7 +1123,7 @@ class TaskbarHud:
         self._bg_cache = (w, h, arr)
         return arr
 
-    def render(self, segments, status_icon=None, status_active=False, status_flag=None) -> bool:
+    def render(self, segments, status_flag=None) -> bool:
         """把各段文字画进 DIB 并 UpdateLayeredWindow 到窗口.
 
         segments = [(text, (r,g,b), alpha_mul)], 从左到右排.
@@ -1129,7 +1148,7 @@ class TaskbarHud:
 
         status_size = max(16, self._px("active_icon_size_px", 18))
         icon_gap = self._px("active_icon_gap_px", 5)
-        status_slot = status_size + icon_gap
+        status_slot = self._flag_slot(status_flag)
         def segment_width(segment):
             if len(segment) > 3 and segment[3] == "__downloads__":
                 return segment[4][1] + segment[4][2]
@@ -1372,21 +1391,9 @@ class TaskbarHud:
             put_pixel(center_x, top + max(4, size // 5 + 1), color, 230)
             x += size + icon_gap
 
-        status_y = max(0, (h - status_size) // 2 + y_off)
         if status_flag:
             draw_flag(status_flag)
             x += status_slot
-        elif status_active:
-            # 固定状态位表示正在计时，不占用或替换榜单图标。
-            cx = x + status_size // 2
-            cy = status_y + status_size // 2
-            draw_dot(cx, cy, max(3, status_size // 5), (95, 229, 164), 80)
-            draw_dot(cx, cy, max(2, status_size // 7), (95, 229, 164))
-            x += status_slot
-        else:
-            status_x = x
-            draw_icon(status_icon)
-            x = max(x, status_x + status_slot)
 
         for segment in segments:
             text, (cr, cg, cb), amul = segment[:3]
@@ -1523,18 +1530,23 @@ class TaskbarHud:
         ranges = self._free_ranges()
         target = self._choose_range(ranges)
         if target is None:
-            log("no free range on taskbar")
+            if self._visible:
+                self._show(False)
+                log("no free range on taskbar")
             return False
 
         # 宽度上限 = min(配置上限, 目标空闲段的宽度) —— 先定位置再裁内容
-        limit = max(min_w, min(want, target[1] - target[0]))
+        limit = min(max(min_w, want), target[1] - target[0])
         cr = wintypes.RECT()
         user32.GetClientRect(self.taskbar, ctypes.byref(cr))
         height = (cr.bottom - cr.top) or 48
-        segments, line_w = self._build_segments(st, limit, downloads, height)
+        status_flag = read_proxy_country() if self.cfg.get("show_proxy_location", False) else None
+        segments, line_w = self._build_segments(st, limit, downloads, height, status_flag)
         is_active = bool(st.get("process") and not st.get("paused"))
-        status_icon = None if is_active else self._icon_pixels("")
-        status_flag = read_proxy_country() if self.cfg.get("show_proxy_location", True) else None
+        if not segments and not status_flag:
+            if self._visible:
+                self._show(False)
+            return True
         width = max(min_w, min(line_w + pad * 2, limit))
 
         br = wintypes.RECT()
@@ -1558,19 +1570,18 @@ class TaskbarHud:
                             SWP_NOZORDER | SWP_NOACTIVATE)
 
         # 只在"内容或画布变了"时重渲染
-        key = (tuple(segments), is_active, bool(status_icon), status_flag,
-               battery_elapsed_label(read_battery()))
+        key = (tuple(segments), status_flag, battery_elapsed_label(read_battery()))
         if key != self._seg_key or resized or not self._visible:
-            self.render(segments, status_icon, is_active, status_flag)
+            self.render(segments, status_flag)
             self._seg_key = key
             self._text = "".join(s[0] for s in segments)
         if not self._visible:
             self._show(True)
-        self._write_status(segments, width, height, x_screen, status_icon, is_active, status_flag)
+        self._write_status(segments, width, height, x_screen, is_active, status_flag)
         return True
 
     def _write_status(self, segments, width: int, height: int, x_screen: int,
-                      icon=None, status_active=False, status_flag=None) -> None:
+                      status_active=False, status_flag=None) -> None:
         """写一份当前状态, 方便用 --check 或外部脚本核对 HUD 到底显示了什么.
 
         窗口里的字是画进分层位图的, 读不出来, 所以只能自己记一份.
@@ -1579,7 +1590,7 @@ class TaskbarHud:
             st = {
                 "text": "".join(s[0] for s in segments),
                 "status": "tracking" if status_active else "idle",
-                "status_icon": bool(icon),
+                "status_icon": bool(status_flag),
                 "proxy_country": status_flag,
                 "battery_elapsed": battery_elapsed_label(read_battery()),
                 "segments": [
@@ -1636,7 +1647,11 @@ class TaskbarHud:
         if not user32.GetWindowRect(self.taskbar, ctypes.byref(br)):
             return
         width = self._w
-        x = max(br.left, min(int(self._manual_x), br.right - width))
+        ranges = [r for r in self._free_ranges() if r[1] - r[0] >= width]
+        if not ranges:
+            return
+        x = min((max(s, min(int(self._manual_x), e - width)) for s, e in ranges),
+                key=lambda candidate: abs(candidate - self._manual_x))
         pt = POINT(x, br.top)
         user32.ScreenToClient(self.taskbar, ctypes.byref(pt))
         user32.SetWindowPos(self.hwnd, None, pt.x, 0, width, self._h,
@@ -1652,10 +1667,8 @@ class TaskbarHud:
         self.cfg["anchor"] = "manual"
         save_config(self.cfg)
         # 存夹取后的值, 免得留下 -29 这种越界坐标
-        br = wintypes.RECT()
-        x = int(self._manual_x)
-        if user32.GetWindowRect(self.taskbar, ctypes.byref(br)):
-            x = max(br.left, min(x, br.right - max(1, self._w)))
+        wr = wintypes.RECT()
+        x = wr.left if user32.GetWindowRect(self.hwnd, ctypes.byref(wr)) else int(self._manual_x)
         self._manual_x = x
         save_pos({"x": x, "saved_at": time.time()})
         log(f"drag saved x={x}")
@@ -1764,6 +1777,8 @@ class TaskbarHud:
         self._last_state = st
         if st.get("paused") and self.cfg.get("hide_when_paused"):
             self._show(False)
+            return
+        if self._drag is not None:
             return
         try:
             self.layout_and_paint(st)

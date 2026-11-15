@@ -2,14 +2,14 @@
 
     .venv\\Scripts\\python.exe build_exe.py
 
-产物: `dist\\状态栏记时器.exe` (单文件, 自带 Python 运行时和所有依赖)
+产物: `dist\\任务栏计时器.exe` (单文件, 自带 Python 运行时和所有依赖)
 
 要点:
 * `--onefile` 让子进程也走同一个 exe (靠 `--role`, 见 app.py 的角色分发).
   冻结子进程设置 `PYINSTALLER_RESET_ENVIRONMENT=1`，各自管理解包目录生命周期.
 * `--add-data` 把 只读资源 (网页三件套 + tray.ps1 + 图标) 打进包里;
   运行时会落在 `sys._MEIPASS`, 由 paths.res_dir() 取.
-* 数据和日志写到 exe 旁边 (paths.app_dir()), 所以把 exe 放进项目目录就能接着用同一份历史数据.
+* 打包版的数据和日志写到用户的 LocalAppData (paths.app_dir())。
 """
 from __future__ import annotations
 
@@ -18,9 +18,12 @@ import shutil
 import subprocess
 import sys
 import argparse
+from pathlib import Path
+
+from release_info import APP_NAME, VERSION
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-NAME = "状态栏记时器"
+NAME = APP_NAME
 
 # 只读资源: 源路径;打包后放到的相对位置 (都是根目录)
 ADD_DATA = [
@@ -28,6 +31,7 @@ ADD_DATA = [
     "dashboard.css",
     "dashboard.js",
     "tray.ps1",
+    "install_update.ps1",
     "tray_icon.ico",
 ]
 
@@ -38,12 +42,35 @@ EXCLUDES = [
 ]
 
 
+def write_version_info(path: Path) -> None:
+    version = (*map(int, VERSION.split(".")), 0)
+    path.write_text(f"""
+VSVersionInfo(
+    ffi=FixedFileInfo(filevers={version!r}, prodvers={version!r}, mask=0x3f,
+                      flags=0, OS=0x40004, fileType=1, subtype=0, date=(0, 0)),
+    kids=[
+        StringFileInfo([StringTable('080404b0', [
+            StringStruct('FileDescription', {APP_NAME!r}),
+            StringStruct('ProductName', {APP_NAME!r}),
+            StringStruct('FileVersion', {VERSION!r}),
+            StringStruct('ProductVersion', {VERSION!r}),
+            StringStruct('OriginalFilename', {f"{APP_NAME}.exe"!r}),
+        ])]),
+        VarFileInfo([VarStruct('Translation', [0x0804, 1200])]),
+    ],
+)
+""".strip(), encoding="utf-8")
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="构建状态栏记时器")
+    parser = argparse.ArgumentParser(description=f"构建{APP_NAME}")
     parser.add_argument("--output-dir", help="指定构建产物目录，不覆盖当前运行中的安装版")
     parser.add_argument("--build-only", action="store_true", help="只构建，不复制到项目根目录")
     options = parser.parse_args()
     out_dir = os.path.abspath(options.output_dir) if options.output_dir else os.path.join(ROOT, "dist")
+    version_file = Path(ROOT) / "build" / "version_info.txt"
+    version_file.parent.mkdir(exist_ok=True)
+    write_version_info(version_file)
 
     args = [
         sys.executable, "-m", "PyInstaller",
@@ -52,6 +79,7 @@ def main() -> int:
         "--noconsole",
         "--name", NAME,
         "--icon", os.path.join(ROOT, "tray_icon.ico"),
+        "--version-file", str(version_file),
         "--distpath", out_dir,
         "--workpath", os.path.join(ROOT, "build"),
         "--specpath", os.path.join(ROOT, "build"),

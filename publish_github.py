@@ -12,37 +12,42 @@
 用法:
     .venv\\Scripts\\python.exe publish_github.py --check      # 只看凭据能不能用 (不改任何东西)
     .venv\\Scripts\\python.exe publish_github.py --repo-only  # 只建仓库 + 推送代码
+    .venv\\Scripts\\python.exe publish_github.py --release-only  # 仅为已推送的提交发布
     .venv\\Scripts\\python.exe publish_github.py              # 全流程 (含 Release + exe)
 """
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from release_info import APP_NAME, OWNER, REPO, VERSION, asset_name
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-OWNER = "XIA020"
-# ⚠️ GitHub 仓库名只允许 ASCII (字母/数字/./-/_)。用中文名的话会被剥成 "-",
-# 所以这里用英文名, 中文显示名放在 description 和 README 标题里。
-REPO = "status-bar-timer"
-TAG = "v1.1.1"
+TAG = f"v{VERSION}"
 DESCRIPTION = "把当前应用的已用时长嵌进 Windows 任务栏，并统计屏幕使用时长"
 EXE = os.environ.get(
     "STATUS_BAR_TIMER_EXE",
-    os.path.join(ROOT, "dist", "状态栏记时器.exe"),
+    os.path.join(ROOT, "dist", f"{APP_NAME}.exe"),
 )
-ASSET_NAME = f"{REPO}-{TAG}.exe"
+ASSET_NAME = asset_name(TAG)
 
 API = "https://api.github.com"
 UPLOADS = "https://uploads.github.com"
 
-RELEASE_BODY = """## 状态栏记时器 v1.1.1
+RELEASE_BODY = """## 任务栏计时器 {tag}
 
 把「当前应用 + 已用时长」直接**嵌进 Windows 任务栏**，并统计每天的屏幕使用时长。
+
+### 本版变化
+
+- 软件更名为「任务栏计时器」。托盘新增「检查更新」和「开机自启」。
+- 修复 Windows 11 上计时区覆盖系统时钟和通知图标的问题。
+- 日志和使用记录移到用户数据目录。代理国旗有内容时才占位置。
 
 ### 主要功能
 
@@ -61,8 +66,9 @@ RELEASE_BODY = """## 状态栏记时器 v1.1.1
 下载下面的 `{asset}`，放到一个长期保留的目录，双击运行即可。
 
 - 自包含：Python 运行时和依赖都打包在这一个文件里，机器上不需要装 Python
-- 绿色：设置、历史数据、图标缓存都写在 exe 旁边的 `data\\` 目录，删掉整个目录就干净卸载
-- 开机自启：`{asset} --install-autostart` 装，`--uninstall-autostart` 卸
+- 数据：设置、历史记录、缓存和日志保存在 `%LOCALAPPDATA%\\StatusBarTimer`。首次升级时可从 exe 旁的旧 `data\\` 导入历史和设置。
+- 可选更新：程序检查 GitHub Releases，点击「立即更新」后下载、校验并重开。旧版需要先手动下载一次。
+- 开机自启：右键托盘图标，勾选或取消「开机自启」。首次运行默认关闭。
 
 首次运行如果 SmartScreen 提示「未知发布者」，点「更多信息 → 仍要运行」（没有做代码签名）。
 
@@ -72,7 +78,7 @@ RELEASE_BODY = """## 状态栏记时器 v1.1.1
 
 ### 环境要求
 
-Windows 10 1809+ / Windows 11（需要 WebView2 运行时；Win 11 自带，Win 10 可能要装一次）。
+本次在 Windows 11 x64 24H2 实测。Windows 10 x64（1809 及以上）保留兼容路径，仍待实测。管理页需要 WebView2 运行时。
 
 ### 已知限制
 
@@ -237,12 +243,13 @@ def create_release(token: str, login: str) -> str:
     step("4/4 建 Release 并上传 exe")
     if not os.path.exists(EXE):
         raise SystemExit(f"  [跳过] 找不到 exe: {EXE}\n         先跑 build_exe.py")
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     status, data = api("POST", f"/repos/{login}/{REPO}/releases", token, {
         "tag_name": TAG,
-        "target_commitish": "main",
-        "name": f"状态栏记时器 {TAG}",
-        "body": RELEASE_BODY.format(asset=ASSET_NAME),
-        "draft": False,
+        "target_commitish": commit,
+        "name": f"{APP_NAME} {TAG}",
+        "body": RELEASE_BODY.format(asset=ASSET_NAME, tag=TAG),
+        "draft": True,
         "prerelease": False,
     })
     if status not in (200, 201):
@@ -254,15 +261,21 @@ def create_release(token: str, login: str) -> str:
     print(f"  上传 {os.path.basename(EXE)} ({size/1024/1024:.1f} MB) 作为 {ASSET_NAME} …")
     with open(EXE, "rb") as f:
         blob = f.read()
-    q = urllib.parse.urlencode({"name": ASSET_NAME})
+    q = urllib.parse.urlencode({"name": ASSET_NAME, "label": f"{APP_NAME} {TAG}（Windows x64）"})
     status, data = api("POST",
                        f"/repos/{login}/{REPO}/releases/{rel['id']}/assets?{q}",
                        token, base=UPLOADS, raw=blob,
                        ctype="application/octet-stream")
     if status not in (200, 201):
         raise SystemExit(f"  [失败] 上传附件返回 {status}: {str(data)[:400]}")
+    if data.get("digest") != "sha256:" + hashlib.sha256(blob).hexdigest():
+        raise SystemExit("  [失败] GitHub 附件校验值不匹配，Release 仍为草稿")
     print(f"  附件: {data.get('browser_download_url')}")
-    return rel.get("html_url", "")
+    status, released = api("PATCH", f"/repos/{login}/{REPO}/releases/{rel['id']}", token,
+                           {"draft": False})
+    if status != 200 or released.get("draft"):
+        raise SystemExit(f"  [失败] 发布 Release 返回 {status}: {str(released)[:400]}")
+    return released.get("html_url", "")
 
 
 def replace_asset(token: str, login: str) -> int:
@@ -298,6 +311,10 @@ def main() -> int:
 
     if "--replace-asset" in args:
         return replace_asset(token, login)
+
+    if "--release-only" in args:
+        print(create_release(token, OWNER))
+        return 0
 
     if not os.path.isdir(os.path.join(ROOT, ".git")):
         raise SystemExit("当前目录不是 git 仓库")
