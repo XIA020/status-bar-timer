@@ -31,7 +31,10 @@ OWNER = "XIA020"
 REPO = "status-bar-timer"
 TAG = "v1.1.1"
 DESCRIPTION = "把当前应用的已用时长嵌进 Windows 任务栏，并统计屏幕使用时长"
-EXE = os.path.join(ROOT, "dist", "状态栏记时器.exe")
+EXE = os.environ.get(
+    "STATUS_BAR_TIMER_EXE",
+    os.path.join(ROOT, "dist", "状态栏记时器.exe"),
+)
 ASSET_NAME = f"{REPO}-{TAG}.exe"
 
 API = "https://api.github.com"
