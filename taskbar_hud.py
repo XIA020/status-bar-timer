@@ -10,7 +10,7 @@ r"""taskbar_hud.py — 把前台应用用时真正嵌进 Windows 任务栏.
        → 屏幕上只有文字, 没有方块背景和边框
     5. 监听 TaskbarCreated 消息: explorer 崩溃重启后自动重新停靠
 
-数据来源: data/state.json   (tracker_worker.py 每秒写)
+数据来源: data/state.json   (tracker_worker.py 每 250 毫秒写)
 配置文件: data/hud_config.json (不存在则用内置默认值, 自动生成)
 拖动位置: data/hud_pos.json  (拖过之后写入手动 x)
 日志:     hud.log
@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import sys
 import time
@@ -42,6 +43,7 @@ gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 import paths
+from download_progress import DownloadProgress, speed_label
 
 # ==================== 路径 ====================
 ROOT = paths.app_dir()
@@ -51,6 +53,9 @@ CONTROL_PATH = os.path.join(DATA_DIR, "control.json")
 CONFIG_PATH = os.path.join(DATA_DIR, "hud_config.json")
 POS_PATH = os.path.join(DATA_DIR, "hud_pos.json")
 STATUS_PATH = os.path.join(DATA_DIR, "hud_status.json")
+BATTERY_PATH = os.path.join(DATA_DIR, "battery.json")
+PROXY_LOCATION_PATH = os.path.join(DATA_DIR, "proxy_location.json")
+IDLE_ICON_PATH = os.path.join(paths.res_dir(), "tray_icon.ico")
 LOG_PATH = os.path.join(ROOT, "hud.log")
 
 # ==================== Win32 常量 ====================
@@ -309,6 +314,10 @@ def _h(v) -> str:
 # ==================== 配置 ====================
 DEFAULT_CONFIG = {
     "enabled": True,
+    "show_proxy_location": True,
+    "show_mouse_battery": True,
+    "show_download_progress": True,
+    "download_progress_dir": "",
     # 位置: right = 贴在托盘区左边; left = 贴任务栏最左; center = 最长空闲段居中; manual = 用 hud_pos.json 的 x
     "anchor": "right",
     "gap_px": 10,              # 与相邻任务栏元素的间距
@@ -336,10 +345,10 @@ DEFAULT_CONFIG = {
     "top_apps_gap": "   ",              # 计时与列表之间的间隔
     "top_apps_item_sep": " · ",         # 列表项之间的分隔
     "top_apps_time_format": "compact",  # compact = 12m / 2h3m; long = 12m 30s / 2h 3m
-    "top_apps_include_current": False,  # 列表里要不要再列一次当前应用 (主计时已经显示了)
+    "top_apps_include_current": True,   # 完整排行包含当前应用，切换前台不会改变图标集合
     "top_apps_name_max": 16,            # 应用名超过这个长度就截断 (0 = 不截断)
     "dim_alpha": 150,                   # 列表那段的不透明度 (0-255), 越低越"退后"
-    "poll_ms": 500,            # 读 state.json 的间隔
+    "poll_ms": 250,            # 读 state.json 的间隔
     "health_every": 10,        # 每 N 次轮询做一次停靠健康检查
     "drag_threshold_px": 4,    # 光标移动超过这个距离才算拖动 (防止轻点一下就把位置钉死)
 }
@@ -435,6 +444,53 @@ def read_state() -> dict:
     return _last_good_state
 
 
+def read_battery() -> dict:
+    try:
+        with open(BATTERY_PATH, "r", encoding="utf-8") as f:
+            value = json.load(f)
+        fresh = time.time() - float(value.get("updated_at", 0)) <= 20
+        if value.get("available") and fresh:
+            return value
+        # 无线计时独立于实时电量查询，短暂 HID 超时不能让用时一起消失。
+        if value.get("connection") == "2.4G" and value.get("wireless_since"):
+            return {"available": False, "connection": "2.4G",
+                    "wireless_since": value["wireless_since"]}
+        return {}
+    except Exception:
+        return {}
+
+
+def battery_elapsed_label(battery: dict) -> str:
+    try:
+        seconds = max(0, int(time.time() - float(battery["wireless_since"])))
+    except (KeyError, TypeError, ValueError):
+        return "--"
+    minutes = seconds // 60
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    if days:
+        return f"{days}d{hours}h"
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    return f"{minutes}m"
+
+
+def read_proxy_country() -> str | None:
+    try:
+        with open(PROXY_LOCATION_PATH, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        country = str(state.get("country") or "").upper()
+        supported = {
+            "US", "CN", "JP", "KR", "GB", "DE", "FR", "NL", "SG", "HK",
+            "TW", "CA", "AU", "RU", "TR", "IN", "VN", "TH", "ID", "IT",
+            "ES", "CH", "PL", "UA", "IE", "NZ",
+        }
+        fresh = time.time() - float(state.get("updated_at", 0)) <= 600
+        return country if state.get("available") and fresh and country in supported else None
+    except Exception:
+        return None
+
+
 def control_shutdown_requested() -> bool:
     try:
         with open(CONTROL_PATH, "r", encoding="utf-8") as f:
@@ -494,6 +550,8 @@ class TaskbarHud:
         self._font_key = None
         self._text_color_rgb = (230, 230, 230)
         self._selftest = False
+        self._icon_cache: dict = {}
+        self._download_progress = DownloadProgress()
 
     # ---------- DPI ----------
     def _dpi_scale(self) -> float:
@@ -781,11 +839,64 @@ class TaskbarHud:
             return str(self.cfg.get("format_paused", "已暂停")).format(process="", duration=dur)
         if not proc:
             return str(self.cfg.get("format_idle", "空闲")).format(process="", duration=dur)
-        fmt = str(self.cfg.get("format_active", "{process} ({duration})"))
+        # 活跃应用用图标表示，主 HUD 只保留时长；不再把进程名写进文本。
+        return dur
+
+    def _icon_pixels(self, exe: str | None):
+        """返回透明、圆角图标像素；空路径表示使用计时器自身图标。"""
+        source = exe or IDLE_ICON_PATH
         try:
-            return fmt.format(process=proc, duration=dur)
-        except Exception:
-            return f"{proc} ({dur})"
+            key = (os.path.normcase(os.path.abspath(source)),
+                   os.path.getmtime(source) if os.path.isfile(source) else 0)
+            if key in self._icon_cache:
+                return self._icon_cache[key]
+            import io
+            from PIL import Image, ImageDraw
+            if exe:
+                import app_icons
+                png = app_icons.extract_icon_png(exe, 64)
+                if not png:
+                    # Windows 的 ApplicationFrameHost 等宿主进程通常没有
+                    # 可提取的应用图标；给它们绘制透明底通用窗口图标。
+                    image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+                    draw = ImageDraw.Draw(image)
+                    draw.rounded_rectangle((4, 4, 59, 59), radius=14,
+                                           fill=(54, 108, 155, 235),
+                                           outline=(155, 205, 232, 230), width=2)
+                    draw.rounded_rectangle((13, 14, 51, 50), radius=5,
+                                           fill=(22, 34, 48, 255))
+                    draw.rounded_rectangle((14, 15, 50, 25), radius=4,
+                                           fill=(83, 157, 202, 255))
+                    draw.rectangle((14, 20, 50, 25), fill=(83, 157, 202, 255))
+                    for cx in (18, 22, 26):
+                        draw.ellipse((cx, 18, cx + 2, 20), fill=(225, 240, 250, 255))
+                    draw.rounded_rectangle((19, 32, 45, 35), radius=1,
+                                           fill=(143, 194, 222, 255))
+                    draw.rounded_rectangle((19, 40, 40, 43), radius=1,
+                                           fill=(94, 143, 171, 255))
+                else:
+                    image = Image.open(io.BytesIO(png))
+            else:
+                image = Image.open(source)
+            image = image.convert("RGBA")
+            # 统一做成柔和圆角方形，保持 Windows 任务栏图标的观感。
+            mask = Image.new("L", image.size, 0)
+            from PIL import ImageChops
+            ImageDraw.Draw(mask).rounded_rectangle(
+                (0, 0, image.width - 1, image.height - 1),
+                radius=max(2, image.width // 5), fill=255)
+            image.putalpha(ImageChops.multiply(image.getchannel("A"), mask))
+            size = max(16, self._px("active_icon_size_px", 18))
+            image = image.resize((size, size), Image.Resampling.LANCZOS)
+            pixels = list(image.getdata())
+            result = (size, pixels)
+            self._icon_cache[key] = result
+            if len(self._icon_cache) > 24:
+                self._icon_cache.pop(next(iter(self._icon_cache)))
+            return result
+        except Exception as e:
+            log(f"icon load failed: {e}")
+            return None
 
     def _short_name(self, name: str) -> str:
         """列表里用的短名: 去掉 .exe 尾巴, 过长截断."""
@@ -800,26 +911,15 @@ class TaskbarHud:
             n = n[:mx - 1] + "…"
         return n or "?"
 
-    def _build_segments(self, st: dict, limit_px: int):
-        """拼出「主计时 + 今日 Top 列表」两段, 返回 (segments, line_width).
-
-        segments = [(text, (r,g,b), alpha_mul)], 按顺序从左到右排.
-        Top 列表用更低的不透明度 → 视觉上退到次要位置, 主计时还是视觉焦点.
-
-        Top 列表是**逐项试放**的: 宽度放不下就停, 不会截出半个应用名.
-        """
+    def _build_segments(self, st: dict, limit_px: int, downloads=(), height=0):
+        """拼出今日累计排行；固定的状态位宽度让空闲标记切换时榜单不位移。"""
         pad = self._px("padding_x_px", 10)
         avail = max(20, limit_px - pad * 2)
+        slot = max(16, self._px("active_icon_size_px", 18)) + self._px("active_icon_gap_px", 5)
+        segments = []
+        width = slot
 
-        main = self._fit_text(self.build_text(st), avail)
-        segments = [(main, self._text_color_rgb, 255)]
-        width = self._measure(main)
-
-        if not self.cfg.get("show_top_apps", True):
-            return segments, width
         apps = st.get("top_apps") or []
-        if not apps:
-            return segments, width
 
         try:
             count = max(1, int(self.cfg.get("top_apps_count", 3)))
@@ -829,35 +929,94 @@ class TaskbarHud:
         sep = str(self.cfg.get("top_apps_item_sep", " · "))
         use_long = str(self.cfg.get("top_apps_time_format", "compact")).lower() == "long"
 
-        cur = st.get("process")
-        if cur and not self.cfg.get("top_apps_include_current", False):
-            apps = [a for a in apps if str(a.get("name")) != str(cur)]
-        if not apps:
-            return segments, width
+        download_rows = []
+        if len(downloads) == 1:
+            _, percent, speed = downloads[0]
+            download_rows.append((f"↓ {percent}%  {speed_label(speed)}", percent))
+        elif downloads:
+            for name, percent, speed in downloads[:2]:
+                short_name = ("VMware" if name.startswith("VMware-Workstation") else
+                              "Win11" if name.startswith("Windows11-") else self._short_name(name)[:6])
+                download_rows.append((f"{short_name} {percent}%  {speed_label(speed)}", percent))
+            if len(downloads) > 2:
+                download_rows[1] = (f"+{len(downloads) - 1}  {speed_label(sum(row[2] for row in downloads[1:]))}", None)
+            font_height = SIZE()
+            gdi32.GetTextExtentPoint32W(self._measure_dc, "Ag", 2, ctypes.byref(font_height))
+            if height < 2 * (font_height.cy + 3) + 2:
+                remaining = len(downloads) - 1
+                _, percent, speed = downloads[0]
+                download_rows = [(f"↓ {percent}%  {speed_label(speed)}  +{remaining}", percent)]
 
-        budget = avail - width - self._measure(gap)
-        if budget <= 0:
-            return segments, width
+        download_width = max((self._measure(row[0]) for row in download_rows), default=0)
+        download_gap = max(8, self._px("active_icon_gap_px", 5) * 2) if download_rows else 0
+        download_space = download_width + download_gap
+        if download_space > avail - width:
+            download_rows = []
+            download_space = 0
 
+        try:
+            alpha = max(0, min(255, int(self.cfg.get("dim_alpha", 150))))
+        except Exception:
+            alpha = 150
+        battery_segment = None
+        battery_w = 0
+        battery = read_battery() if self.cfg.get("show_mouse_battery", True) else {}
+        if battery:
+            icon_size = self._px("active_icon_size_px", 18)
+            icon_gap = self._px("active_icon_gap_px", 5)
+            if battery.get("available") and "percent" in battery:
+                battery_text = f"{max(0, min(100, int(battery.get('percent', 0))))}%"
+                battery_w = (icon_size + icon_gap + self._measure(battery_elapsed_label(battery))
+                             + icon_gap + max(icon_size, self._measure(battery_text)))
+                marker = "__battery__"
+            else:
+                battery_text = battery_elapsed_label(battery)
+                battery_w = icon_size + icon_gap + self._measure(battery_text)
+                marker = "__wireless_timer__"
+            battery_segment = (battery_text, self._text_color_rgb, alpha, marker)
+        budget = avail - width - self._measure(gap) - download_space
+        if download_rows and battery_segment:
+            budget -= battery_w + self._measure(sep)
         items = []
-        for a in apps[:count]:
-            name = self._short_name(a.get("name"))
+        items_width = 0
+        current = st.get("process") if not st.get("paused") else None
+        for a in (apps[:count] if self.cfg.get("show_top_apps", True) else []):
             t = str(a.get("time_long" if use_long else "time") or "").strip()
-            piece = f"{name} {t}".strip()
-            if not piece:
+            if not t:
                 continue
-            if self._measure(sep.join(items + [piece])) <= budget:
-                items.append(piece)
+            # 空 exe 路径使用计时器图标，避免旧记录回退成应用名称。
+            exe = a.get("exe") or ""
+            icon = self._icon_pixels(exe)
+            icon_w = (icon[0] + self._px("active_icon_gap_px", 5)) if icon else 0
+            sep_w = self._measure(sep) if items else 0
+            piece_w = icon_w + self._measure(t)
+            if items_width + sep_w + piece_w <= budget:
+                if items:
+                    items.append((sep, self._text_color_rgb, alpha, None))
+                    items_width += sep_w
+                is_current = bool(current and str(a.get("name")) == str(current))
+                items.append((t, self._text_color_rgb, alpha, exe, is_current))
+                items_width += piece_w
             else:
                 break
         if items:
-            tail = gap + sep.join(items)
-            try:
-                alpha = max(0, min(255, int(self.cfg.get("dim_alpha", 150))))
-            except Exception:
-                alpha = 150
-            segments.append((tail, self._text_color_rgb, alpha))
-            width += self._measure(tail)
+            segments.append((gap, self._text_color_rgb, alpha))
+            segments.extend(items)
+            width += self._measure(gap) + items_width
+
+        if battery_segment:
+            sep_w = self._measure(sep) if segments else 0
+            if width + sep_w + battery_w + download_space <= avail:
+                if segments:
+                    segments.append((sep, self._text_color_rgb, alpha))
+                    width += sep_w
+                # 特殊标记由 render() 绘制鼠标/电池图标，不依赖 emoji 字体。
+                segments.append(battery_segment)
+                width += battery_w
+        if download_rows:
+            segments.append((" / ".join(row[0] for row in download_rows), self._text_color_rgb, 255,
+                             "__downloads__", (tuple(download_rows), download_width, download_gap)))
+            width += download_space
         return segments, width
 
     def _resolve_text_color(self) -> None:
@@ -945,7 +1104,7 @@ class TaskbarHud:
         self._bg_cache = (w, h, arr)
         return arr
 
-    def render(self, segments) -> bool:
+    def render(self, segments, status_icon=None, status_active=False, status_flag=None) -> bool:
         """把各段文字画进 DIB 并 UpdateLayeredWindow 到窗口.
 
         segments = [(text, (r,g,b), alpha_mul)], 从左到右排.
@@ -968,16 +1127,340 @@ class TaskbarHud:
         y_off = self._px("text_offset_y_px", 0)
         buf = self._buf
 
-        line_w = sum(self._measure(t) for t, _, _ in segments)
+        status_size = max(16, self._px("active_icon_size_px", 18))
+        icon_gap = self._px("active_icon_gap_px", 5)
+        status_slot = status_size + icon_gap
+        def segment_width(segment):
+            if len(segment) > 3 and segment[3] == "__downloads__":
+                return segment[4][1] + segment[4][2]
+            text_width = self._measure(segment[0])
+            if len(segment) > 3 and segment[3] == "__battery__":
+                size = max(12, self._px("active_icon_size_px", 18))
+                battery = read_battery()
+                elapsed_width = self._measure(battery_elapsed_label(battery))
+                return size + icon_gap + elapsed_width + icon_gap + max(size, text_width)
+            if len(segment) > 3 and segment[3] == "__wireless_timer__":
+                size = max(12, self._px("active_icon_size_px", 18))
+                return size + icon_gap + text_width
+            icon_data = (self._icon_pixels(segment[3])
+                         if len(segment) > 3 and segment[3] is not None else None)
+            return text_width + ((icon_data[0] + icon_gap) if icon_data else 0)
+
+        line_w = status_slot + sum(segment_width(s) for s in segments)
         x = max(0, (w - line_w) // 2)
 
-        for text, (cr, cg, cb), amul in segments:
-            if not text:
+        def put_pixel(px, py, rgb, alpha=255):
+            if not (0 <= px < w and 0 <= py < h) or alpha <= 0:
+                return
+            i = py * w + px
+            dst = out[i]
+            inv = 255 - alpha
+            r, g, b = rgb
+            out[i] = (((alpha + ((dst >> 24) & 0xFF) * inv // 255) << 24)
+                      | ((r * alpha // 255 + ((dst >> 16) & 0xFF) * inv // 255) << 16)
+                      | ((g * alpha // 255 + ((dst >> 8) & 0xFF) * inv // 255) << 8)
+                      | (b * alpha // 255 + (dst & 0xFF) * inv // 255))
+
+        def draw_dot(cx, cy, radius, rgb, alpha=255):
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    if dx * dx + dy * dy <= radius * radius:
+                        put_pixel(cx + dx, cy + dy, rgb, alpha)
+
+        def draw_flag(country):
+            fw = status_size
+            fh = max(11, round(fw * 0.62))
+            fx = x + max(0, (status_slot - fw) // 2)
+            fy = max(0, (h - fh) // 2 + y_off)
+            white, red, blue, gold = (248, 248, 248), (205, 35, 48), (35, 55, 125), (255, 215, 35)
+
+            def rect(x1, y1, x2, y2, color):
+                for py in range(max(0, y1), min(h, y2)):
+                    for px in range(max(0, x1), min(w, x2)):
+                        put_pixel(px, py, color)
+
+            def dot(cx, cy, radius, color):
+                for py in range(max(0, cy-radius), min(h, cy+radius+1)):
+                    for px in range(max(0, cx-radius), min(w, cx+radius+1)):
+                        if (px-cx)**2 + (py-cy)**2 <= radius**2:
+                            put_pixel(px, py, color)
+
+            def star(cx, cy, radius, color):
+                import math
+                dot(cx, cy, 1, color)
+                points = []
+                for i in range(10):
+                    r = radius if i % 2 == 0 else max(1, radius // 2)
+                    a = -math.pi / 2 + i * math.pi / 5
+                    points.append((round(cx+r*math.cos(a)), round(cy+r*math.sin(a))))
+                for py in range(max(0, cy-radius), min(h, cy+radius+1)):
+                    for px in range(max(0, cx-radius), min(w, cx+radius+1)):
+                        inside = False
+                        j = len(points)-1
+                        for i, (xi, yi) in enumerate(points):
+                            xj, yj = points[j]
+                            if ((yi > py) != (yj > py) and
+                                    px < (xj-xi)*(py-yi)/(yj-yi+1e-9)+xi):
+                                inside = not inside
+                            j = i
+                        if inside:
+                            put_pixel(px, py, color)
+
+            if country == "US":
+                rect(fx, fy, fx+fw, fy+fh, white)
+                for py in range(fh):
+                    if (py * 13 // fh) % 2 == 0:
+                        rect(fx, fy + py, fx + fw, fy + py + 1, red)
+                rect(fx, fy, fx+fw*2//5, fy+fh*7//13, blue)
+                for row in range(3):
+                    for col in range(4):
+                        dot(fx+2+col*max(2, fw//10), fy+2+row*max(2, fh//5), 0, white)
+            elif country == "CN":
+                rect(fx, fy, fx+fw, fy+fh, (222, 41, 16))
+                star(fx+fw//4, fy+fh//3, max(2, fh//4), gold)
+                for sx, sy in ((.53,.17),(.65,.31),(.65,.49),(.53,.63)):
+                    dot(fx+round(fw*sx), fy+round(fh*sy), 1, gold)
+            elif country == "JP":
+                rect(fx, fy, fx+fw, fy+fh, white)
+                dot(fx+fw//2, fy+fh//2, max(2,fh//3), (188,0,45))
+            elif country == "GB":
+                rect(fx, fy, fx+fw, fy+fh, blue)
+                rect(fx+fw*2//5, fy, fx+fw*3//5, fy+fh, white)
+                rect(fx, fy+fh*2//5, fx+fw, fy+fh*3//5, white)
+                rect(fx+fw*9//20, fy, fx+fw*11//20, fy+fh, red)
+                rect(fx, fy+fh*9//20, fx+fw, fy+fh*11//20, red)
+            elif country == "KR":
+                rect(fx, fy, fx+fw, fy+fh, white)
+                dot(fx+fw//2, fy+fh//2-2, max(2,fh//5), red)
+                dot(fx+fw//2, fy+fh//2+2, max(2,fh//5), blue)
+            elif country in {"DE","RU","NL","ID","PL","UA","ES","TH"}:
+                bands={"DE":((20,20,20),red,(255,205,45)),"RU":(white,(45,75,165),red),
+                       "NL":(red,white,blue),"ID":(red,white,white),"PL":(white,red,red),
+                       "UA":((35,95,190),gold,gold),"ES":(red,(245,190,40),red),
+                       "TH":(red,white,blue)}[country]
+                if country == "TH":
+                    for y1,y2,c in ((0,1/6,red),(1/6,1/3,white),(1/3,2/3,blue),(2/3,5/6,white),(5/6,1,red)):
+                        rect(fx,fy+round(fh*y1),fx+fw,fy+round(fh*y2),c)
+                else:
+                    for i,c in enumerate(bands): rect(fx,fy+i*fh//3,fx+fw,fy+(i+1)*fh//3,c)
+            elif country in {"FR","IT","IE"}:
+                bands={"FR":(blue,white,red),"IT":((0,145,75),white,red),"IE":((0,145,75),white,(245,135,45))}[country]
+                for i,c in enumerate(bands): rect(fx+i*fw//3,fy,fx+(i+1)*fw//3,fy+fh,c)
+            elif country == "SG":
+                rect(fx,fy,fx+fw,fy+fh//2,red); rect(fx,fy+fh//2,fx+fw,fy+fh,white)
+                dot(fx+fw//4,fy+fh//4,max(2,fh//5),white); dot(fx+fw*3//10,fy+fh//4,max(2,fh//6),red)
+            elif country == "HK":
+                rect(fx,fy,fx+fw,fy+fh,red)
+                for i in range(5):
+                    import math
+                    a=-math.pi/2+i*2*math.pi/5
+                    dot(fx+round(fw/2+fw/5*math.cos(a)),fy+round(fh/2+fh/5*math.sin(a)),max(1,fh//9),white)
+            elif country == "TW":
+                rect(fx,fy,fx+fw,fy+fh,red); rect(fx,fy,fx+fw*2//5,fy+fh*3//5,blue)
+                dot(fx+fw//5,fy+fh//4,max(2,fh//7),white)
+            elif country == "CA":
+                rect(fx,fy,fx+fw,fy+fh,white); rect(fx,fy,fx+fw//4,fy+fh,red); rect(fx+3*fw//4,fy,fx+fw,fy+fh,red)
+                star(fx+fw//2,fy+fh//2,max(2,fh//4),red)
+            elif country == "CH":
+                rect(fx,fy,fx+fw,fy+fh,red); rect(fx+fw*2//5,fy+fh//5,fx+fw*3//5,fy+4*fh//5,white)
+                rect(fx+fw//4,fy+2*fh//5,fx+3*fw//4,fy+3*fh//5,white)
+            elif country == "IN":
+                rect(fx,fy,fx+fw,fy+fh//3,(240,140,35)); rect(fx,fy+fh//3,fx+fw,fy+2*fh//3,white)
+                rect(fx,fy+2*fh//3,fx+fw,fy+fh,(30,135,75)); dot(fx+fw//2,fy+fh//2,max(2,fh//6),(35,65,150))
+            elif country == "VN":
+                rect(fx,fy,fx+fw,fy+fh,red); star(fx+fw//2,fy+fh//2,max(2,fh//3),gold)
+            elif country == "TR":
+                rect(fx,fy,fx+fw,fy+fh,red)
+                dot(fx+fw*2//5,fy+fh//2,max(2,fh//3),white)
+                dot(fx+fw*9//20,fy+fh//2,max(2,fh//4),red)
+                star(fx+fw*3//5,fy+fh//2,max(2,fh//5),white)
+            elif country in {"AU","NZ"}:
+                rect(fx,fy,fx+fw,fy+fh,(30,65,135)); rect(fx,fy,fx+fw*2//5,fy+fh*2//5,white)
+                rect(fx+fw//6,fy,fx+fw//4,fy+fh*2//5,red); rect(fx,fy+fh//6,fx+fw*2//5,fy+fh//4,red)
+                for sx,sy in ((.7,.25),(.8,.55),(.58,.7),(.84,.82)): dot(fx+round(fw*sx),fy+round(fh*sy),1,white)
+            elif country in {"IT","IE","BE"}:
+                pass
+            else:
+                rect(fx,fy,fx+fw,fy+fh,(85,95,115))
+                rect(fx+2,fy+2,fx+fw-2,fy+3,white); rect(fx+2,fy+fh-3,fx+fw-2,fy+fh-2,white)
+
+        def draw_icon(icon_data, highlight=False):
+            nonlocal x
+            if not icon_data:
+                return
+            origin_x = x
+            size, pixels = icon_data
+            iy = max(0, (h - size) // 2 + y_off)
+            for py in range(size):
+                if iy + py >= h:
+                    break
+                for px in range(size):
+                    if x + px >= w:
+                        break
+                    r, g, b, a = pixels[py * size + px]
+                    if not a:
+                        continue
+                    put_pixel(origin_x + px, iy + py, (r, g, b), a)
+            if highlight:
+                draw_dot(origin_x + size - 2, iy + size - 2, max(2, size // 7),
+                         (95, 229, 164))
+            x += size + icon_gap
+
+        def draw_battery_icon(percent: int, charging: bool, left: int, top: int):
+            size = max(12, self._px("active_icon_size_px", 18))
+            body_w = max(8, size - 4)
+            body_h = max(7, size // 2)
+            color = (95, 229, 164) if charging else (220, 225, 232)
+            for px in range(body_w):
+                put_pixel(left + px, top, color, 220)
+                put_pixel(left + px, top + body_h - 1, color, 220)
+            for py in range(body_h):
+                put_pixel(left, top + py, color, 220)
+                put_pixel(left + body_w - 1, top + py, color, 220)
+            cap_x = left + body_w
+            cap_y = top + max(1, body_h // 3)
+            put_pixel(cap_x, cap_y, color, 220)
+            put_pixel(cap_x, cap_y + 1, color, 220)
+            fill_w = max(1, (body_w - 4) * max(0, min(100, percent)) // 100)
+            for py in range(max(1, body_h - 4)):
+                for px in range(fill_w):
+                    put_pixel(left + 2 + px, top + 2 + py, color, 210)
+            if charging:
+                # Filled bolt silhouette: the old 1px polyline looked fragmented
+                # after the 18px icon was rasterized for the taskbar.
+                bolt = [(left + round(body_w * .64), top + 1),
+                        (left + round(body_w * .33), top + round(body_h * .53)),
+                        (left + round(body_w * .51), top + round(body_h * .53)),
+                        (left + round(body_w * .39), top + body_h - 2),
+                        (left + round(body_w * .73), top + round(body_h * .40)),
+                        (left + round(body_w * .54), top + round(body_h * .40))]
+                bolt_color = (255, 205, 65)
+                for py in range(min(p[1] for p in bolt), max(p[1] for p in bolt) + 1):
+                    crossings = []
+                    for index, (x1, y1) in enumerate(bolt):
+                        x2, y2 = bolt[(index + 1) % len(bolt)]
+                        if y1 == y2 or not min(y1, y2) <= py < max(y1, y2):
+                            continue
+                        crossings.append(x1 + (py - y1) * (x2 - x1) / (y2 - y1))
+                    crossings.sort()
+                    for index in range(0, len(crossings) - 1, 2):
+                        for px in range(math.ceil(crossings[index]), math.floor(crossings[index + 1]) + 1):
+                            put_pixel(px, py, bolt_color, 255)
+
+        def draw_mouse_icon(top: int | None = None):
+            nonlocal x
+            size = max(12, self._px("active_icon_size_px", 18))
+            body_w = max(8, size * 2 // 3)
+            radius = body_w / 2
+            center_x = x + body_w // 2
+            if top is None:
+                top = max(0, (h - size) // 2 + y_off)
+            mid_y = top + size // 2
+            color = (220, 225, 232)
+            # 胶囊形鼠标外框，中心留透明，配一条按键分界线和滚轮。
+            for py in range(size):
+                cy = min(max(py, radius), size - radius)
+                for px in range(body_w):
+                    dx = px - (body_w - 1) / 2
+                    dy = py - cy
+                    distance = (dx * dx + dy * dy) ** 0.5
+                    if radius - 1.2 <= distance <= radius + 0.2:
+                        put_pixel(x + px, top + py, color, 220)
+            for py in range(top + 2, mid_y):
+                put_pixel(center_x, py, color, 200)
+            put_pixel(center_x, top + max(3, size // 5), color, 230)
+            put_pixel(center_x, top + max(4, size // 5 + 1), color, 230)
+            x += size + icon_gap
+
+        status_y = max(0, (h - status_size) // 2 + y_off)
+        if status_flag:
+            draw_flag(status_flag)
+            x += status_slot
+        elif status_active:
+            # 固定状态位表示正在计时，不占用或替换榜单图标。
+            cx = x + status_size // 2
+            cy = status_y + status_size // 2
+            draw_dot(cx, cy, max(3, status_size // 5), (95, 229, 164), 80)
+            draw_dot(cx, cy, max(2, status_size // 7), (95, 229, 164))
+            x += status_slot
+        else:
+            status_x = x
+            draw_icon(status_icon)
+            x = max(x, status_x + status_slot)
+
+        for segment in segments:
+            text, (cr, cg, cb), amul = segment[:3]
+            exe = segment[3] if len(segment) > 3 else None
+            if exe == "__downloads__":
+                rows, block_width, gap = segment[4]
+                x += gap
+                metrics = SIZE()
+                gdi32.GetTextExtentPoint32W(self._memdc, "Ag", 2, ctypes.byref(metrics))
+                row_height = metrics.cy + 3
+                top = max(0, (h - row_height * len(rows)) // 2)
+                for label, percent in rows:
+                    ctypes.memset(self._bits, 0, n * 4)
+                    rect = wintypes.RECT(x, top, w, h)
+                    user32.DrawTextW(self._memdc, label, len(label), ctypes.byref(rect),
+                                     DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX)
+                    for yy in range(top, min(h, top + metrics.cy)):
+                        for xx in range(x, min(w, x + block_width + 2)):
+                            coverage = buf[yy * w + xx] & 0xFF
+                            if coverage:
+                                put_pixel(xx, yy, (cr, cg, cb), coverage)
+                    if percent is not None:
+                        filled = block_width * percent // 100
+                        for xx in range(block_width):
+                            put_pixel(x + xx, top + metrics.cy, (72, 167, 233), 240 if xx < filled else 65)
+                    top += row_height
+                x += block_width
                 continue
+            is_current = bool(segment[4]) if len(segment) > 4 else False
             ctypes.memset(self._bits, 0, n * 4)
             sz = SIZE()
             gdi32.GetTextExtentPoint32W(self._memdc, text, len(text), ctypes.byref(sz))
-            ty = max(0, (h - sz.cy) // 2) + y_off
+            battery_block_end = None
+            text_y = None
+            if exe == "__battery__":
+                battery = read_battery()
+                size = max(12, self._px("active_icon_size_px", 18))
+                elapsed_text = battery_elapsed_label(battery)
+                body_h = max(7, size // 2)
+                group_h = max(size, body_h + 2 + sz.cy)
+                group_top = max(0, (h - group_h) // 2 + y_off)
+                mouse_top = max(0, group_top + (group_h - size) // 2)
+                draw_mouse_icon(mouse_top)
+                elapsed_size = SIZE()
+                gdi32.GetTextExtentPoint32W(self._memdc, elapsed_text, len(elapsed_text), ctypes.byref(elapsed_size))
+                elapsed_y = max(0, (h - elapsed_size.cy) // 2 + y_off)
+                elapsed_rect = wintypes.RECT(x, elapsed_y, w, h)
+                user32.DrawTextW(self._memdc, elapsed_text, len(elapsed_text), ctypes.byref(elapsed_rect),
+                                DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX)
+                elapsed_x0, elapsed_x1 = max(0, x - 2), min(w, x + elapsed_size.cx + 3)
+                elapsed_y0, elapsed_y1 = max(0, elapsed_y - 2), min(h, elapsed_y + elapsed_size.cy + 3)
+                for yy in range(elapsed_y0, elapsed_y1):
+                    for xx in range(elapsed_x0, elapsed_x1):
+                        i = yy * w + xx
+                        cov = buf[i] & 0xFF
+                        if cov:
+                            put_pixel(xx, yy, self._text_color_rgb, cov * amul // 255)
+                x += elapsed_size.cx + icon_gap
+                battery_left = x
+                block_w = max(size - 3, sz.cx)
+                icon_left = battery_left + max(0, (block_w - (size - 3)) // 2)
+                draw_battery_icon(int(battery.get("percent", 0)),
+                                  battery.get("charging") in {"charging", "full"},
+                                  icon_left, group_top)
+                x = battery_left + max(0, (block_w - sz.cx) // 2)
+                battery_block_end = battery_left + block_w
+                text_y = group_top + body_h + 2
+            elif exe == "__wireless_timer__":
+                draw_mouse_icon()
+            elif exe is not None:
+                draw_icon(self._icon_pixels(exe), is_current)
+            if not text:
+                continue
+            ty = text_y if text_y is not None else max(0, (h - sz.cy) // 2) + y_off
             rect = wintypes.RECT(x, ty, w, h)
             user32.DrawTextW(self._memdc, text, len(text), ctypes.byref(rect),
                              DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX)
@@ -1002,7 +1485,7 @@ class TaskbarHud:
                               | ((cr * cov // 255 + ((px >> 16) & 0xFF) * inv // 255) << 16)
                               | ((cg * cov // 255 + ((px >> 8) & 0xFF) * inv // 255) << 8)
                               | (cb * cov // 255 + (px & 0xFF) * inv // 255))
-            x += self._measure(text)
+            x = battery_block_end if battery_block_end is not None else x + self._measure(text)
 
         ctypes.memmove(self._bits, out, n * 4)
 
@@ -1030,6 +1513,12 @@ class TaskbarHud:
         pad = self._px("padding_x_px", 10)
         min_w = self._px("min_width_px", 60)
         want = self._px("max_width_px", 460)
+        directory = self.cfg.get("download_progress_dir")
+        downloads = (self._download_progress.read(directory)
+                     if self.cfg.get("show_download_progress", True)
+                     and isinstance(directory, str) and directory else ())
+        if downloads:
+            want += round(145 * self._dpi_scale())
 
         ranges = self._free_ranges()
         target = self._choose_range(ranges)
@@ -1039,12 +1528,14 @@ class TaskbarHud:
 
         # 宽度上限 = min(配置上限, 目标空闲段的宽度) —— 先定位置再裁内容
         limit = max(min_w, min(want, target[1] - target[0]))
-        segments, line_w = self._build_segments(st, limit)
-        width = max(min_w, min(line_w + pad * 2, limit))
-
         cr = wintypes.RECT()
         user32.GetClientRect(self.taskbar, ctypes.byref(cr))
         height = (cr.bottom - cr.top) or 48
+        segments, line_w = self._build_segments(st, limit, downloads, height)
+        is_active = bool(st.get("process") and not st.get("paused"))
+        status_icon = None if is_active else self._icon_pixels("")
+        status_flag = read_proxy_country() if self.cfg.get("show_proxy_location", True) else None
+        width = max(min_w, min(line_w + pad * 2, limit))
 
         br = wintypes.RECT()
         user32.GetWindowRect(self.taskbar, ctypes.byref(br))
@@ -1067,26 +1558,35 @@ class TaskbarHud:
                             SWP_NOZORDER | SWP_NOACTIVATE)
 
         # 只在"内容或画布变了"时重渲染
-        key = tuple(segments)
+        key = (tuple(segments), is_active, bool(status_icon), status_flag,
+               battery_elapsed_label(read_battery()))
         if key != self._seg_key or resized or not self._visible:
-            self.render(segments)
+            self.render(segments, status_icon, is_active, status_flag)
             self._seg_key = key
-            self._text = "".join(t for t, _, _ in segments)
+            self._text = "".join(s[0] for s in segments)
         if not self._visible:
             self._show(True)
-        self._write_status(segments, width, height, x_screen)
+        self._write_status(segments, width, height, x_screen, status_icon, is_active, status_flag)
         return True
 
-    def _write_status(self, segments, width: int, height: int, x_screen: int) -> None:
+    def _write_status(self, segments, width: int, height: int, x_screen: int,
+                      icon=None, status_active=False, status_flag=None) -> None:
         """写一份当前状态, 方便用 --check 或外部脚本核对 HUD 到底显示了什么.
 
         窗口里的字是画进分层位图的, 读不出来, 所以只能自己记一份.
         """
         try:
             st = {
-                "text": "".join(t for t, _, _ in segments),
+                "text": "".join(s[0] for s in segments),
+                "status": "tracking" if status_active else "idle",
+                "status_icon": bool(icon),
+                "proxy_country": status_flag,
+                "battery_elapsed": battery_elapsed_label(read_battery()),
                 "segments": [
-                    {"text": t, "color": list(c), "alpha": a} for t, c, a in segments
+                    {"text": s[0], "color": list(s[1]), "alpha": s[2],
+                     "icon": len(s) > 3 and s[3] is not None,
+                     "current": len(s) > 4 and s[3] != "__downloads__" and bool(s[4])}
+                    for s in segments
                 ],
                 "hwnd": f"{self.hwnd:#x}",
                 "docked": self._docked,
@@ -1346,7 +1846,8 @@ class TaskbarHud:
                         bbox[2] = max(bbox[2], x); bbox[3] = max(bbox[3], y)
         top_alphas = sorted(hist.items(), key=lambda kv: -kv[1])[:6]
         out.append(f"text          = {self._text!r}")
-        out.append(f"segments      = {[(t, c, a) for t, c, a in (self._seg_key or [])]}")
+        segs = self._seg_key[0] if self._seg_key else []
+        out.append(f"segments      = {[(s[0], s[1], s[2], len(s) > 3 and s[3] is not None) for s in segs]}")
         out.append(f"hwnd          = {self.hwnd:#x}")
         out.append(f"taskbar       = {self.taskbar:#x}")
         out.append(f"parent == taskbar : {user32.GetParent(self.hwnd) == self.taskbar}")
@@ -1492,8 +1993,9 @@ def check_running_hud() -> int:
         import datetime
         ts = datetime.datetime.fromtimestamp(st.get("updated_at", 0)).strftime("%H:%M:%S")
         print(f"当前显示文字  = {st.get('text')!r}   (更新于 {ts})")
+        print(f"当前状态      = {st.get('status')!r}，状态图标={st.get('status_icon')}")
         for i, seg in enumerate(st.get("segments") or []):
-            print(f"  段{i+1}         = {seg.get('text')!r}  color={seg.get('color')} alpha={seg.get('alpha')}")
+            print(f"  项{i+1}         = {seg.get('text')!r}  current={seg.get('current')} icon={seg.get('icon')}")
         print(f"anchor        = {st.get('anchor')!r}  duration_mode={st.get('duration_mode')!r}  dpi_scale={st.get('dpi_scale')}")
     except Exception as e:
         print(f"读 hud_status.json 失败: {e}")

@@ -29,7 +29,7 @@ OWNER = "XIA020"
 # ⚠️ GitHub 仓库名只允许 ASCII (字母/数字/./-/_)。用中文名的话会被剥成 "-",
 # 所以这里用英文名, 中文显示名放在 description 和 README 标题里。
 REPO = "status-bar-timer"
-TAG = "v1.0.0"
+TAG = "v1.1.0"
 DESCRIPTION = "把当前应用的已用时长嵌进 Windows 任务栏，并统计屏幕使用时长"
 EXE = os.path.join(ROOT, "dist", "状态栏记时器.exe")
 ASSET_NAME = f"{REPO}-{TAG}.exe"
@@ -37,7 +37,7 @@ ASSET_NAME = f"{REPO}-{TAG}.exe"
 API = "https://api.github.com"
 UPLOADS = "https://uploads.github.com"
 
-RELEASE_BODY = """## 状态栏记时器 v1.0.0
+RELEASE_BODY = """## 状态栏记时器 v1.1.0
 
 把「当前应用 + 已用时长」直接**嵌进 Windows 任务栏**，并统计每天的屏幕使用时长。
 
@@ -46,8 +46,11 @@ RELEASE_BODY = """## 状态栏记时器 v1.0.0
 - **任务栏内实时计时**：文字直接画在任务栏里，只有字、没有方块背景，自动避让任务按钮和托盘区
 - **时长累计**：切走再切回来接着涨，不是从 0 重新开始
 - **旁边列出今日用得最久的几个应用**（用更淡的颜色，不抢主计时的焦点）
-- **管理页面**：每天 / 每周两种视图，大字总时长 + 与昨天（上周）对比 + 柱状图 + 应用列表（带真实图标）
-- **纯本地**：数据存 SQLite，无云同步、无遥测、无账号
+- **管理页面**：每天 / 每周视图、总时长对比、柱状图、应用列表与功能设置
+- **鼠标电量**：可选，仅支持 HECATE G3M Pro
+- **代理地区**：可选，读取 Windows 系统代理出口的国家代码
+- **下载进度**：可选，读取用户指定目录里的 aria2 `.aria2` 控制文件
+- **本地存储**：使用记录只存 SQLite，无云同步、无遥测、无账号
 
 ### 下载
 
@@ -58,6 +61,10 @@ RELEASE_BODY = """## 状态栏记时器 v1.0.0
 - 开机自启：`{asset} --install-autostart` 装，`--uninstall-autostart` 卸
 
 首次运行如果 SmartScreen 提示「未知发布者」，点「更多信息 → 仍要运行」（没有做代码签名）。
+
+### 可选功能与隐私
+
+管理页面底部可分别开关代理地区、鼠标电量和下载进度。下载进度需要填写 aria2 控制文件目录；留空时不扫描。代理地区开关开启且 Windows 系统代理可用时，程序会经该代理访问 Cloudflare 获取国家代码；Cloudflare 会看到代理出口 IP，程序只保存国家代码。鼠标电量仅支持 HECATE G3M Pro。
 
 ### 环境要求
 

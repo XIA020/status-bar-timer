@@ -18,6 +18,7 @@ import webview
 
 import db
 import paths
+import app_settings
 
 HTML_PATH = os.path.join(paths.res_dir(), "dashboard.html")
 HTTP_PORT = None  # set after server starts
@@ -100,6 +101,20 @@ def _make_api_app():
             return _json({"has_data": total > 0, "total_seconds": total})
         except Exception as e:
             return _json({"has_data": False, "error": str(e)})
+
+    @app.get('/api/settings')
+    def get_settings():
+        return _json(app_settings.get_settings())
+
+    @app.post('/api/settings')
+    def save_settings():
+        payload = bottle.request.json
+        if not isinstance(payload, dict):
+            raise bottle.HTTPError(400, 'settings must be a JSON object')
+        try:
+            return _json(app_settings.update_settings(payload))
+        except (TypeError, ValueError) as exc:
+            raise bottle.HTTPError(400, str(exc))
 
     @app.get('/')
     def root():

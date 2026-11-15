@@ -127,24 +127,25 @@ def query_range_total(start: str, end: str) -> float:
 
 
 def query_hourly_between(start: str, end: str) -> list[float]:
-    """区间内按小时聚合的秒数 (只返回 0-23 槽位, 用于一天)."""
-    sec = _seconds_sql("start_ts", "end_ts")
+    """将会话按实际覆盖时间分配到小时槽位 (用于一天)."""
     with _connect() as conn:
         rows = conn.execute(
             f"""
-            SELECT CAST(substr(start_ts, 12, 2) AS INTEGER) AS hour,
-                   SUM({sec}) AS total_seconds
+            SELECT start_ts, end_ts
             FROM sessions
-            WHERE start_ts >= ? AND start_ts < ?
-            GROUP BY hour
+            WHERE end_ts > ? AND start_ts < ?
             """,
             (start, end),
         ).fetchall()
         slots = [0.0] * 24
         for r in rows:
-            h = r["hour"]
-            if isinstance(h, int) and 0 <= h < 24:
-                slots[h] = float(r["total_seconds"] or 0.0)
+            cursor = max(datetime.fromisoformat(r["start_ts"]), datetime.fromisoformat(start))
+            finish = min(datetime.fromisoformat(r["end_ts"]), datetime.fromisoformat(end))
+            while cursor < finish:
+                next_hour = cursor.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                boundary = min(finish, next_hour)
+                slots[cursor.hour] += (boundary - cursor).total_seconds()
+                cursor = boundary
         return slots
 
 
@@ -209,25 +210,9 @@ def query_daily_total(start: str, end: str) -> list[dict]:
 
 def query_hourly_today() -> list[dict]:
     """今日按小时 (0-23) 聚合秒数. 用于时段热力图."""
-    sec = _seconds_sql("start_ts", "end_ts")
     today, tomorrow = _today_range()
-    with _connect() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT CAST(substr(start_ts, 12, 2) AS INTEGER) AS hour,
-                   SUM({sec}) AS total_seconds
-            FROM sessions
-            WHERE start_ts >= ? AND start_ts < ?
-            GROUP BY hour
-            ORDER BY hour ASC
-            """,
-            (today, tomorrow),
-        ).fetchall()
-        # 填满 0-23, 缺失小时补 0
-        result = {h: 0.0 for h in range(24)}
-        for r in rows:
-            result[r["hour"]] = r["total_seconds"]
-        return [{"hour": h, "total_seconds": result[h]} for h in range(24)]
+    slots = query_hourly_between(today, tomorrow)
+    return [{"hour": h, "total_seconds": slots[h]} for h in range(24)]
 
 
 def query_today_totals() -> dict:
@@ -249,6 +234,22 @@ def query_today_totals() -> dict:
             (today, tomorrow),
         ).fetchall()
         return {r["process"]: float(r["total_seconds"] or 0.0) for r in rows}
+
+
+def query_today_exe_paths() -> dict:
+    """返回今天可用的代表性 exe 路径，供任务栏 Top 列表显示图标。"""
+    today, tomorrow = _today_range()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT process, MAX(exe_path) AS exe_path
+            FROM sessions
+            WHERE start_ts >= ? AND start_ts < ? AND exe_path IS NOT NULL AND exe_path != ''
+            GROUP BY process
+            """,
+            (today, tomorrow),
+        ).fetchall()
+        return {r["process"]: r["exe_path"] for r in rows}
 
 
 def query_recent_sessions(limit: int = 30) -> list[dict]:

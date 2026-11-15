@@ -7,6 +7,10 @@ __pycache__/
 # ---- 打包产物 ----
 build/
 dist/
+/build_fix/
+/dist_fix/
+/handoff/
+/AGENTS.md
 *.spec
 # 项目根那份是"已安装"的 exe, 20MB+, 走 Releases 分发, 不进仓库
 /*.exe

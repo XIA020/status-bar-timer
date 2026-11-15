@@ -48,6 +48,28 @@
       <div class="list__empty" id="p-empty" hidden>还没有数据 —— 先正常用一会儿电脑</div>
     </section>
 
+    <section class="settings card">
+      <h2 class="settings__title">任务栏功能</h2>
+      <label class="setting-row">
+        <span><b>代理节点位置</b><small>通过 Windows 系统代理查询出口国家</small></span>
+        <input type="checkbox" id="setting-proxy">
+      </label>
+      <label class="setting-row">
+        <span><b>鼠标电量与使用时间</b><small>适用于 HECATE G3M Pro</small></span>
+        <input type="checkbox" id="setting-battery">
+      </label>
+      <label class="setting-row">
+        <span><b>下载进度</b><small>读取 aria2 下载目录中的 .aria2 记录</small></span>
+        <input type="checkbox" id="setting-downloads">
+      </label>
+      <label class="setting-path">
+        <span>aria2 下载目录</span>
+        <input type="text" id="setting-download-dir" placeholder="例如 C:\\Downloads">
+      </label>
+      <button class="settings__save" id="settings-save">保存设置</button>
+      <span class="settings__status" id="settings-status"></span>
+    </section>
+
   </main>
 </div>
 

@@ -6,7 +6,7 @@
 
 要点:
 * `--onefile` 让子进程也走同一个 exe (靠 `--role`, 见 app.py 的角色分发).
-  PyInstaller 会通过 `_MEIPASS2` 让子进程复用父进程已经解开的临时目录, 不会重复解包.
+  冻结子进程设置 `PYINSTALLER_RESET_ENVIRONMENT=1`，各自管理解包目录生命周期.
 * `--add-data` 把 只读资源 (网页三件套 + tray.ps1 + 图标) 打进包里;
   运行时会落在 `sys._MEIPASS`, 由 paths.res_dir() 取.
 * 数据和日志写到 exe 旁边 (paths.app_dir()), 所以把 exe 放进项目目录就能接着用同一份历史数据.
@@ -54,6 +54,9 @@ def main() -> int:
         "--collect-all", "pythonnet",
         "--hidden-import", "clr",
         "--hidden-import", "win32timezone",
+        # webview/pythonnet dynamically load this standard-library extension.
+        "--hidden-import", "unicodedata",
+        "--collect-all", "hid",
     ]
     for f in ADD_DATA:
         args += ["--add-data", f"{os.path.join(ROOT, f)}{os.pathsep}."]
@@ -82,6 +85,9 @@ def main() -> int:
     mb = os.path.getsize(exe) / 1024 / 1024
     print(f"\n[成功] {exe}")
     print(f"       大小 {mb:.1f} MB")
+
+    if "--build-only" in sys.argv[1:]:
+        return 0
 
     # 顺手放到项目根目录一份: 那里是"已安装"位置 —— 自启动和桌面快捷方式都指向它,
     # 而且它跟源码版共用同一份 data/ (历史记录不会分裂).

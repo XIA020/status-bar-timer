@@ -46,3 +46,11 @@ def child_cmd(role: str, script: str) -> list[str]:
     if not os.path.exists(pythonw):
         pythonw = sys.executable
     return [pythonw, os.path.join(root, script)]
+
+
+def child_env() -> dict[str, str]:
+    """Give each long-lived onefile child its own extraction directory."""
+    env = os.environ.copy()
+    if is_frozen():
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env

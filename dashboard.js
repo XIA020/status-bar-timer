@@ -233,6 +233,34 @@ window.addEventListener('hashchange', () => {
 
 window.addEventListener('resize', hideTip);
 
+async function loadSettings() {
+  const s = await apiGet('/api/settings');
+  document.getElementById('setting-proxy').checked = !!s.show_proxy_location;
+  document.getElementById('setting-battery').checked = !!s.show_mouse_battery;
+  document.getElementById('setting-downloads').checked = !!s.show_download_progress;
+  document.getElementById('setting-download-dir').value = s.download_progress_dir || '';
+}
+
+document.getElementById('settings-save').addEventListener('click', async () => {
+  const status = document.getElementById('settings-status');
+  status.textContent = '保存中…';
+  try {
+    await fetch('/api/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        show_proxy_location: document.getElementById('setting-proxy').checked,
+        show_mouse_battery: document.getElementById('setting-battery').checked,
+        show_download_progress: document.getElementById('setting-downloads').checked,
+        download_progress_dir: document.getElementById('setting-download-dir').value
+      })
+    }).then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); });
+    status.textContent = '已保存';
+  } catch (e) {
+    status.textContent = '保存失败';
+    console.error('settings save failed', e);
+  }
+});
+
 (async function init() {
   // 支持 #week / #day 直接打开对应视图 (也方便调试和截图)
   const k = (location.hash || '').replace('#', '');
@@ -240,6 +268,7 @@ window.addEventListener('resize', hideTip);
   document.querySelectorAll('.tab').forEach(t =>
     t.classList.toggle('is-active', t.dataset.kind === currentKind));
   await load(currentKind);
+  try { await loadSettings(); } catch (e) { console.error('settings load failed', e); }
   setInterval(() => {
     if (document.hidden) return;
     const h = (location.hash || '').replace('#', '');

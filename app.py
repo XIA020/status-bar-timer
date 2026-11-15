@@ -29,6 +29,7 @@ import json
 
 import db
 import paths
+from single_instance import acquire_instance_lock
 
 CHECK_INTERVAL = 2  # 备用, 不再用
 SOCKET_HOST = "127.0.0.1"
@@ -272,6 +273,7 @@ class TrayServer:
             subprocess.Popen(
                 paths.child_cmd("dashboard", "dashboard.py"),
                 cwd=paths.app_dir(),
+                env=paths.child_env(),
                 creationflags=0x08000000,
             )
             print("[server] dashboard launched", flush=True)
@@ -360,6 +362,7 @@ def launch_hud(project_dir: str):
         proc = subprocess.Popen(
             paths.child_cmd("hud", "taskbar_hud.py"),
             cwd=project_dir,
+            env=paths.child_env(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=0x08000000,
@@ -382,6 +385,7 @@ def launch_tracker(project_dir: str):
         proc = subprocess.Popen(
             paths.child_cmd("tracker", "tracker_worker.py"),
             cwd=project_dir,
+            env=paths.child_env(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=0x08000000,
@@ -461,6 +465,14 @@ def main():
     parser.add_argument("--no-start", action="store_true")
     parser.add_argument("--autostart", action="store_true")
     args = parser.parse_args()
+
+    try:
+        if not acquire_instance_lock("app", project_dir):
+            print("[main] another instance is already running; exit", flush=True)
+            return
+    except Exception as e:
+        print(f"[main] single-instance lock failed: {e}", file=sys.stderr, flush=True)
+        return
 
     os.makedirs(DATA_DIR, exist_ok=True)
     db.init_db()

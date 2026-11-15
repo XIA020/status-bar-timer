@@ -16,12 +16,11 @@ Windows 前台应用计时器：**把"当前应用 + 已用时长"直接嵌进�
 
 ## 下载即用（免安装）
 
-到 **[Releases](https://github.com/XIA020/status-bar-timer/releases)** 页面下载
-`status-bar-timer-v1.0.0.exe`（就是本程序，约 21 MB），放到一个长期保留的目录，双击即可：
+到 **[Releases](https://github.com/XIA020/status-bar-timer/releases/latest)** 页面下载最新版 `状态栏记时器.exe`，放到一个长期保留的目录，双击即可：
 
 - **自包含**：Python 运行时和依赖都打进这一个文件里，机器上不需要装 Python
 - **绿色**：设置、历史数据、图标缓存都写在 exe 旁边的 `data\` 目录，删掉整个目录就干净卸载了
-- **开机自启**：`status-bar-timer-v1.0.0.exe --install-autostart` 装，`--uninstall-autostart` 卸
+- **开机自启**：`状态栏记时器.exe --install-autostart` 装，`--uninstall-autostart` 卸
 - 首次运行如果 Windows SmartScreen 提示「未知发布者」，点「更多信息 → 仍要运行」即可（没做代码签名）
 
 启动后你会看到两样东西：**任务栏里的计时文字**，和**右下角托盘图标**（右键有菜单）。
@@ -30,19 +29,36 @@ Windows 前台应用计时器：**把"当前应用 + 已用时长"直接嵌进�
 
 - 🕐 **任务栏内实时计时**：文字直接画在任务栏里，只有字、没有方块背景
 - 🔁 **时长累计**：切走再切回来接着涨，不是从 0 重新开始
+- ⌨️ **空闲不计时**：连续 5 分钟没有键鼠输入后停止记录，检测到活动后继续
 - 📊 **旁边列出今日用得最多的几个应用**（暗色显示，不抢主计时的焦点）
 - 📈 **今日 Top 应用柱状图 + 时段分布热图**
 - 📅 **本周 / 本月 Top 应用 + 每日趋势**
 - 📋 **最近 20 条会话列表**（起止时间 + 时长 + 应用 + 窗口标题）
 - ⏸️ **Pause / Resume**（不采集特定时段，比如开会）
 - 🚀 **开机自启**（一键安装到注册表）
-- 🔒 **纯本地**：数据存 SQLite，无云同步、无遥测、无账号
+- 🔒 **本地存储**：使用记录只存本机 SQLite，无云同步、无遥测、无账号。代理地区开关开启时，会经 Windows 系统代理访问 Cloudflare 获取国家代码；详见下方隐私说明
+
+### 可选任务栏功能
+
+管理页面底部的「任务栏功能」区域可分别开关以下功能，设置会保存在程序旁边的 `data\hud_config.json`：
+
+- **代理节点位置**：读取 Windows 系统代理出口国家。仅在系统代理启用时访问 Cloudflare；代理服务器会看到请求，程序只保存国家代码。
+- **鼠标电量与使用时间**：尝试读取 HECATE G3M Pro。其他鼠标不会显示电量；关闭后停止 HID 查询。
+- **下载进度**：读取你指定目录中的 aria2 `.aria2` 控制文件。目录留空时不扫描任何目录；本程序不会连接 aria2 RPC 或扫描下载内容。
+
+三个功能默认开启，用户可在管理页面单独关闭。首次使用下载进度时，在设置卡片填入 aria2 保存控制文件的目录。
+
+功能启用状态默认不会影响主计时器。首次运行请在管理页面确认设置；下载目录和记录只保存在本机。
+
+Windows 桌面壳窗口（`Program Manager`）不记作 File Explorer。系统睡眠或采集进程长时间没有运行时，未采集的时间不会补进前台应用时长。
 
 ## 架构
 
 ```
 app.py (主进程)
-    ├─ tracker_worker.py   子进程: 每秒轮询前台窗口 → 写 SQLite + data/state.json
+    ├─ tracker_worker.py   子进程: 每 250 毫秒检查前台窗口 → 写 SQLite + data/state.json
+    │                      └─ 电量线程: 每 5 秒只读查询 HECATE G3M Pro → data/battery.json
+    │                      └─ 代理位置线程: 每 2 分钟经已启用的 Windows 系统代理读取出口国家 → data/proxy_location.json
     ├─ taskbar_hud.py      子进程: 把计时文字嵌进任务栏 (WS_CHILD + SetParent)
     ├─ tray.ps1            子进程: PowerShell NotifyIcon, 右键菜单 + tooltip
     └─ TCP server (127.0.0.1)  tray 连上来收命令 / 收 state
@@ -50,6 +66,10 @@ app.py (主进程)
 
 - `data/control.json` ← app.py 写（`paused` / `shutdown`），tracker_worker 和 HUD 都读它
 - `data/state.json` → tracker_worker 写，HUD 读它来刷新文字
+- `data/battery.json` → tracker_worker 内的独立低频线程写；仅识别 `320F:706B` 有线设备和 `320F:706E` 2.4G 接收器，HUD 在排行后显示鼠标图标及切换到 2.4G 后经过时间、电池图标下方居中的百分比；充电时在电池图标中央显示闪电；连续 20 秒没有新结果就隐藏，避免显示过期电量
+- `data/proxy_location.json` → 代理位置线程仅在 Windows 系统代理已启用时访问 Cloudflare trace，读取请求的国家代码；Cloudflare 会看到该代理出口 IP，本程序只保存国家代码。HUD 用对应国旗占据原固定状态图标位置，代理关闭、请求失败或国家暂不支持绘制时回退原状态图标。不会绕过代理直连；定位依据是代理出口请求地区，可能与服务商给节点标注的地区不一致
+- 电量查询只发送 `0x1A / 0x06` 只读命令，不使用鼠标配置或写入命令；充电状态仅按已知状态码显示，未知值不猜测
+- 应用友好名称按 exe 路径做最多 256 项的缓存，避免每次 250 毫秒采样都重新读取程序版本信息。
 
 `state.json` 里的字段：
 
@@ -58,7 +78,7 @@ app.py (主进程)
 | `process` / `paused` / `running` | 当前前台应用 / 是否暂停 |
 | `duration` | **本次连续**时长（一切换就归零） |
 | `today_total` | 当前应用**今日累计**时长（切走再切回来接着涨） |
-| `top_apps[]` | 今日按累计时长排序的应用，每项含 `name` / `seconds` / `time`（紧凑）/ `time_long` |
+| `top_apps[]` | 今日按累计时长严格降序排列的应用，每项含 `name` / `exe` / `seconds` / `time`（紧凑）/ `time_long` |
 
 **「时长累计」是怎么算的**：tracker_worker 在内存里维护一份「今日累计基数」`base`，
 每次前台窗口切换就把当前段落库、并把这段时长累加进 `base`。切回来的时候计时从 `base` 往上继续，
@@ -71,12 +91,13 @@ app.py (主进程)
 1. `FindWindow("Shell_TrayWnd")` 拿到任务栏
 2. 自己的窗口去掉 `WS_POPUP`、加上 `WS_CHILD`，`SetParent` 进任务栏
 3. 遍历任务栏子窗口的屏幕矩形，算出**空闲区间**（自动避开开始按钮 / 任务按钮区 / 托盘区）
-4. `WS_EX_LAYERED` + `UpdateLayeredWindow` 做逐像素 alpha → 屏幕上只有文字
+4. `WS_EX_LAYERED` + `UpdateLayeredWindow` 做逐像素 alpha → 显示图标、时长和状态标记
 5. 监听 `TaskbarCreated` → explorer 崩溃重启后自动重新停靠；另有 5 秒一次的健康检查兜底
 
-这一行是**两段**画上去的：主计时用满不透明，后面的 Top 列表用较低不透明度（`dim_alpha`），
-所以两者有明显的主次层次，而不是一坨同样粗细的字。Top 列表是**逐项试放**的——
-当前空闲宽度放不下就停，不会截出半个应用名。
+HUD 只显示一条按今日累计时长严格降序的排行，每个应用只出现一次，配有圆角图标和时长；
+正在使用的应用图标带绿色小点。左侧固定状态位在计时中显示绿色标记，空闲或暂停时显示计时器图标，
+因此切换应用时排行图标不会换位。应用切换由采集器每 250 毫秒检查一次，HUD 同样每 250 毫秒刷新。
+排行是**逐项试放**的，空闲宽度不足时只显示放得下的项目。
 
 这样它自动跟随任务栏：任务栏自动隐藏、改分辨率、换缩放、explorer 重启都能跟上。
 
@@ -104,20 +125,17 @@ app.py (主进程)
 | `text_color` | `"auto"` | `auto` = 跟随系统浅色/深色主题，也可写 `"#E6E6E6"` |
 | `background` / `bg_color` / `bg_alpha` | `false` / `#1C1C1C` / `90` | 想在文字后面加半透明圆角底就打开 |
 | `text_offset_y_px` | `0` | 垂直微调（觉得偏高/偏低时用，负值上移） |
-| `duration_mode` | `"today_total"` | `today_total` = 显示今日累计（切回来接着涨）/ `current` = 只显示本次连续 |
-| `format_active` | `"{process} ({duration})"` | 可用 `{process}` `{duration}` |
-| `format_paused` / `format_idle` | `"已暂停"` / `"空闲"` | |
-| `hide_when_paused` | `false` | 暂停时完全隐藏 |
 | `show_top_apps` | `true` | 是否显示后面的 Top 列表 |
 | `top_apps_count` | `3` | 最多列几个（放不下会自动少列） |
-| `top_apps_include_current` | `false` | 列表里要不要再列一次当前应用（主计时已经显示了，默认不重复） |
-| `top_apps_name_max` | `12` | 应用名超过这个长度截断（会自动去掉 `.exe` 尾巴）；`0` = 不截断 |
+| `top_apps_include_current` | `true` | 完整排行包含当前应用，切换前台时图标集合不变 |
 | `top_apps_time_format` | `"compact"` | `compact` = `12m` / `2h3m`；`long` = `12m 30s` / `2h 3m` |
-| `top_apps_gap` / `top_apps_item_sep` | `"   "` / `" · "` | 计时与列表之间 / 列表项之间的分隔 |
-| `dim_alpha` | `150` | 列表那段的不透明度（0-255），越低越"退后" |
+| `top_apps_gap` / `top_apps_item_sep` | `"   "` / `" · "` | 状态位与排行之间 / 排行项之间的分隔 |
+| `dim_alpha` | `150` | 排行文字的不透明度（0-255），越低越淡 |
 | `drag_threshold_px` | `4` | 光标移动超过这个距离才算拖动 |
 | `enabled` | `true` | 设成 `false` 会让 HUD 自己退出 |
-| `poll_ms` / `health_every` | `500` / `10` | 刷新间隔 / 每 N 次刷新做一次停靠健康检查 |
+| `show_proxy_location` / `show_mouse_battery` / `show_download_progress` | `true` | 分别显示或关闭代理地区、鼠标电量、下载进度；管理页面可操作 |
+| `download_progress_dir` | `""` | aria2 `.aria2` 文件所在目录；通过管理页面设置 |
+| `poll_ms` / `health_every` | `250` / `10` | HUD 刷新间隔 / 每 N 次刷新做一次停靠健康检查 |
 
 拖动过之后 `anchor` 会变成 `manual`，位置存在 `data/hud_pos.json`。
 **想恢复自动贴边**：把 `anchor` 改回 `"right"` 即可。
@@ -175,16 +193,17 @@ app.py (主进程)
 **方式二：从源码跑**
 
 ```powershell
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\start.cmd                                # 一键启动
-.\.venv\Scripts\pythonw.exe app.py          # 或者手动
 ```
 
-依赖（`.venv` 里已装好）：`pywin32` `psutil` `pywebview` `bottle` `pillow`。
+源码运行和自行打包需要 64 位 Python 3.13；exe 运行不需要安装 Python。
 
 **自己打包 exe**（需要 PyInstaller）：
 
 ```powershell
-.\.venv\Scripts\python.exe build_exe.py     # 产物: dist\状态栏记时器.exe, 并复制一份到项目根
+.\.venv\Scripts\python.exe build_exe.py --build-only  # 仅生成 dist\状态栏记时器.exe
 ```
 
 打包后仍是**多进程**：子进程用同一个 exe 加 `--role tracker|hud|dashboard` 起来

@@ -2,10 +2,8 @@
 
 做法 (不需要 COM vtable, 只用 pywin32 + ctypes):
     1. `SHDefExtractIconW` 按指定尺寸拿 HICON (能要到 64px, 比 ExtractIconEx 的 32px 清楚)
-    2. 建一块 32 位 DIB, **先填白**再 DrawIconEx
-       —— GDI 画图标走的是掩码, 透明区域会变成背景色; 而 DDB 的 alpha 通道不可靠.
-          先填白就避开了 alpha 问题: 得到"白底 + 图标", 正好配页面里的白色圆角磁贴.
-    3. GetDIBits 取 BGRA -> PIL -> PNG 字节
+    2. 在黑、白两块 32 位 DIB 上分别 DrawIconEx, 从两次结果恢复透明度
+    3. BGRA -> PIL -> 带透明通道的 PNG 字节
 
 结果按 (exe 路径, mtime, 尺寸) 缓存在 data/icons/, 不会每次重启都重新抽.
 抽不到就返回 None, 前端退化成"首字母圆形头像".
@@ -74,7 +72,8 @@ def _cache_path(exe: str, size: int) -> str:
         mtime = int(os.path.getmtime(exe))
     except OSError:
         mtime = 0
-    key = hashlib.sha1(f"{exe.lower()}|{mtime}|{size}".encode("utf-8", "replace")).hexdigest()[:20]
+    # 版本号确保旧的白底缓存不会被透明图标版本复用。
+    key = hashlib.sha1(f"rgba-v2|{exe.lower()}|{mtime}|{size}".encode("utf-8", "replace")).hexdigest()[:20]
     return os.path.join(ICON_DIR, f"{key}.png")
 
 
@@ -139,19 +138,32 @@ def _extract(exe_path: str, size: int) -> bytes | None:
         if not dib:
             return None
         old = gdi32.SelectObject(mem_dc, dib)
-        # 先铺白: GDI 画图标按掩码合成, 透明处会留下背景色
+        # 分别绘制在黑、白底上，用两次结果反推出透明度。旧式 HICON 的
+        # DrawIconEx 往往不写 DIB alpha；直接保留 alpha 会得到全透明图标。
+        nbytes = size * size * 4
+        ctypes.memset(bits, 0, nbytes)
+        if not user32.DrawIconEx(mem_dc, 0, 0, large, size, size, 0, None, DI_NORMAL):
+            return None
+        black = bytes(ctypes.cast(bits, ctypes.POINTER(ctypes.c_ubyte * nbytes)).contents)
         gdi32.PatBlt(mem_dc, 0, 0, size, size, WHITENESS)
         if not user32.DrawIconEx(mem_dc, 0, 0, large, size, size, 0, None, DI_NORMAL):
             return None
-
-        buf = ctypes.cast(bits, ctypes.POINTER(ctypes.c_ubyte * (size * size * 4))).contents
-        raw = bytes(buf)
+        white = bytes(ctypes.cast(bits, ctypes.POINTER(ctypes.c_ubyte * nbytes)).contents)
+        rgba = bytearray(size * size * 4)
+        for i in range(0, nbytes, 4):
+            # DIB 内存顺序为 BGRA。
+            diffs = [max(0, min(255, white[i + c] - black[i + c])) for c in range(3)]
+            alpha = 255 - sum(diffs) // 3
+            rgba[i + 3] = alpha
+            if alpha:
+                rgba[i + 2] = min(255, (black[i + 2] * 255 + alpha // 2) // alpha)
+                rgba[i + 1] = min(255, (black[i + 1] * 255 + alpha // 2) // alpha)
+                rgba[i] = min(255, (black[i] * 255 + alpha // 2) // alpha)
         try:
             from PIL import Image
         except Exception:
             return None
-        img = Image.frombuffer("RGBA", (size, size), raw, "raw", "BGRA", 0, 1)
-        img = img.convert("RGB")           # 白底, 不需要 alpha
+        img = Image.frombytes("RGBA", (size, size), bytes(rgba), "raw", "BGRA")
         import io
         out = io.BytesIO()
         img.save(out, "PNG")
