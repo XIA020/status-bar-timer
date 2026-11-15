@@ -314,9 +314,9 @@ def _h(v) -> str:
 # ==================== 配置 ====================
 DEFAULT_CONFIG = {
     "enabled": True,
-    "show_proxy_location": True,
+    "show_proxy_location": False,
     "show_mouse_battery": True,
-    "show_download_progress": True,
+    "show_download_progress": False,
     "download_progress_dir": "",
     # 位置: right = 贴在托盘区左边; left = 贴任务栏最左; center = 最长空闲段居中; manual = 用 hud_pos.json 的 x
     "anchor": "right",

@@ -35,7 +35,14 @@ CHECK_INTERVAL = 0.25  # 秒；提高前台切换检测响应速度
 MAX_SAMPLE_GAP = 5.0  # 超过此空档时不把未采集的时间算入使用时长
 IDLE_TIMEOUT_SECONDS = 5 * 60  # 连续无键鼠输入达到此时长后按空闲处理
 EXPLORER_WINDOW_CLASSES = {"CabinetWClass", "ExploreWClass"}
-IGNORED_PROCESS_NAMES = {"applicationframehost.exe"}
+IGNORED_PROCESS_NAMES = {
+    # Windows shell/host processes are infrastructure rather than apps people
+    # intentionally use. Counting their transient foreground surfaces creates
+    # confusing entries such as ShellHost in the screen-time list.
+    "applicationframehost.exe", "shellhost.exe", "shellexperiencehost.exe",
+    "startmenuexperiencehost.exe", "searchhost.exe", "searchapp.exe",
+    "textinputhost.exe", "camerapreview.exe",
+}
 
 
 # Idle polling runs every CHECK_INTERVAL. Keep the ctypes structure and function

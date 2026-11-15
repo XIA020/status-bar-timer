@@ -12,9 +12,9 @@ SETTINGS_PATH = os.path.join(paths.app_dir(), "data", "hud_config.json")
 _LOCK = threading.RLock()
 
 FEATURE_DEFAULTS = {
-    "show_proxy_location": True,
+    "show_proxy_location": False,
     "show_mouse_battery": True,
-    "show_download_progress": True,
+    "show_download_progress": False,
     "download_progress_dir": "",
 }
 

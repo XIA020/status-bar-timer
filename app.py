@@ -29,6 +29,7 @@ import json
 
 import db
 import paths
+import app_settings
 from single_instance import acquire_instance_lock
 
 CHECK_INTERVAL = 2  # 备用, 不再用
@@ -240,6 +241,7 @@ class TrayServer:
                 if conn is not None and now - self._last_push >= 0.5:
                     try:
                         state = _read_state()
+                        state["features"] = app_settings.get_settings()
                         # 加 type 字段以兼容 tray.ps1 协议
                         state["type"] = "state"
                         line = (json.dumps(state, ensure_ascii=False) + "\n").encode("utf-8")
@@ -263,6 +265,14 @@ class TrayServer:
         elif cmd == "pause":
             new_paused = _toggle_paused()
             print(f"[server] pause toggled -> paused={new_paused}", flush=True)
+        elif cmd == "set_feature":
+            feature = msg.get("feature")
+            enabled = msg.get("enabled")
+            if feature in {"show_proxy_location", "show_mouse_battery", "show_download_progress"} and isinstance(enabled, bool):
+                app_settings.update_settings({feature: enabled})
+                print(f"[server] feature {feature} -> {enabled}", flush=True)
+            else:
+                print(f"[server] invalid feature command: {msg!r}", file=sys.stderr)
         elif cmd == "quit":
             self._quit()
         else:
@@ -491,9 +501,24 @@ def main():
 
     print(f"[main] running. port={server.port}", flush=True)
 
+    # The tray icon is a separate PowerShell process. If its socket connection
+    # drops, tray.ps1 exits while tracking and the taskbar HUD keep running.
+    # Periodically restart it so the notification-area icon recovers without
+    # requiring a full app restart.
+    next_tray_check = 0.0
     try:
         while True:
-            time.sleep(60)
+            time.sleep(1.0)
+            if server._stop:
+                break
+            now = time.monotonic()
+            if now < next_tray_check:
+                continue
+            next_tray_check = now + 3.0
+            tray = server.tray_proc
+            if tray is None or tray.poll() is not None:
+                print("[main] tray process is not running; restarting", flush=True)
+                server.tray_proc = server.launch_tray()
     except KeyboardInterrupt:
         pass
 

@@ -16,6 +16,29 @@ import paths
 
 DB_PATH = os.path.join(paths.app_dir(), "data", "screen_time.db")
 
+# These are Windows shell hosts, not user-selected applications. Filter them
+# from both new collection (tracker_worker.py) and old records in reports.
+IGNORED_SYSTEM_PROCESSES = (
+    "applicationframehost.exe", "shellhost.exe", "shellexperiencehost.exe",
+    "startmenuexperiencehost.exe", "searchhost.exe", "searchapp.exe",
+    "textinputhost.exe", "camerapreview.exe",
+)
+
+
+def _visible_session_filter() -> str:
+    labels = ", ".join("'" + name + "'" for name in IGNORED_SYSTEM_PROCESSES)
+    return (
+        f"LOWER(COALESCE(process, '')) NOT IN ({labels}) "
+        "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\applicationframehost.exe' "
+        "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\shellhost.exe' "
+        "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\shellexperiencehost.exe' "
+        "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\startmenuexperiencehost.exe' "
+        "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\searchhost.exe' "
+        "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\searchapp.exe' "
+        "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\textinputhost.exe' "
+        "AND LOWER(COALESCE(exe_path, '')) NOT LIKE '%\\camerapreview.exe'"
+    )
+
 
 def _ensure_data_dir() -> None:
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -120,7 +143,7 @@ def query_range_total(start: str, end: str) -> float:
     with _connect() as conn:
         row = conn.execute(
             f"SELECT COALESCE(SUM({sec}), 0) AS total FROM sessions "
-            f"WHERE start_ts >= ? AND start_ts < ?",
+            f"WHERE start_ts >= ? AND start_ts < ? AND {_visible_session_filter()}",
             (start, end),
         ).fetchone()
         return float(row["total"] or 0.0)
@@ -133,7 +156,7 @@ def query_hourly_between(start: str, end: str) -> list[float]:
             f"""
             SELECT start_ts, end_ts
             FROM sessions
-            WHERE end_ts > ? AND start_ts < ?
+            WHERE end_ts > ? AND start_ts < ? AND {_visible_session_filter()}
             """,
             (start, end),
         ).fetchall()
@@ -160,7 +183,7 @@ def query_top_apps_between(start: str, end: str, limit: int = 30) -> list[dict]:
                    COUNT(*) AS sessions,
                    MAX(exe_path) AS exe_path
             FROM sessions
-            WHERE start_ts >= ? AND start_ts < ?
+            WHERE start_ts >= ? AND start_ts < ? AND {_visible_session_filter()}
             GROUP BY process
             ORDER BY total_seconds DESC
             LIMIT ?
@@ -180,7 +203,7 @@ def query_top_apps(start: str, end: str, limit: int = 20) -> list[dict]:
                    SUM({sec}) AS total_seconds,
                    COUNT(*) AS sessions
             FROM sessions
-            WHERE start_ts >= ? AND start_ts < ?
+            WHERE start_ts >= ? AND start_ts < ? AND {_visible_session_filter()}
             GROUP BY process
             ORDER BY total_seconds DESC
             LIMIT ?
@@ -199,7 +222,7 @@ def query_daily_total(start: str, end: str) -> list[dict]:
             SELECT substr(start_ts, 1, 10) AS day,
                    SUM({sec}) AS total_seconds
             FROM sessions
-            WHERE start_ts >= ? AND start_ts < ?
+            WHERE start_ts >= ? AND start_ts < ? AND {_visible_session_filter()}
             GROUP BY day
             ORDER BY day ASC
             """,
@@ -228,7 +251,7 @@ def query_today_totals() -> dict:
             f"""
             SELECT process, SUM({sec}) AS total_seconds
             FROM sessions
-            WHERE start_ts >= ? AND start_ts < ?
+            WHERE start_ts >= ? AND start_ts < ? AND {_visible_session_filter()}
             GROUP BY process
             """,
             (today, tomorrow),
@@ -244,7 +267,8 @@ def query_today_exe_paths() -> dict:
             """
             SELECT process, MAX(exe_path) AS exe_path
             FROM sessions
-            WHERE start_ts >= ? AND start_ts < ? AND exe_path IS NOT NULL AND exe_path != ''
+            WHERE start_ts >= ? AND start_ts < ? AND {_visible_session_filter()}
+              AND exe_path IS NOT NULL AND exe_path != ''
             GROUP BY process
             """,
             (today, tomorrow),
@@ -260,6 +284,7 @@ def query_recent_sessions(limit: int = 30) -> list[dict]:
             f"""
             SELECT start_ts, end_ts, process, window_title, {sec} AS seconds
             FROM sessions
+            WHERE {_visible_session_filter()}
             ORDER BY start_ts DESC
             LIMIT ?
             """,
@@ -272,7 +297,10 @@ def query_total_seconds() -> float:
     """全库总秒数."""
     sec = _seconds_sql("start_ts", "end_ts")
     with _connect() as conn:
-        row = conn.execute(f"SELECT COALESCE(SUM({sec}), 0) AS total FROM sessions").fetchone()
+        row = conn.execute(
+            f"SELECT COALESCE(SUM({sec}), 0) AS total FROM sessions "
+            f"WHERE {_visible_session_filter()}"
+        ).fetchone()
         return float(row["total"] or 0)
 
 

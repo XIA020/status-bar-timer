@@ -72,26 +72,56 @@ function Send-Command($cmd) {
         Write-Host "[tray] send failed: $_"
     }
 }
+function Send-FeatureCommand($feature, $enabled) {
+    try {
+        $msg = '{"cmd":"set_feature","feature":"' + $feature + '","enabled":' + $enabled.ToString().ToLowerInvariant() + '}'
+        $writer.WriteLine($msg)
+        $writer.Flush()
+        Write-Host "[tray] sent: $msg"
+    } catch { Write-Host "[tray] feature update failed: $_" }
+}
 
 # ---- NotifyIcon + menu ----
-# ExtractAssociatedIcon 单参数版本 (size 参数需要 Size 对象, 这里不用)
-$icon = [System.Drawing.Icon]::ExtractAssociatedIcon('C:\Windows\System32\cmd.exe')
+# tray.ps1 由 PowerShell 托盘进程运行；MainModule 指向 powershell.exe，不能用它取图标。
+# tray_icon.ico 与脚本一起打进 _MEIPASS，直接从资源目录加载项目图标。
+$iconPath = Join-Path $PSScriptRoot 'tray_icon.ico'
+$icon = New-Object System.Drawing.Icon -ArgumentList $iconPath
 $ni = New-Object System.Windows.Forms.NotifyIcon
 $ni.Icon = $icon
-$ni.Text = "Screen Time Tracker"
+$ni.Text = "状态栏计时器"
 $ni.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
+$script:syncingFeatures = $false
+$script:lastFeatures = @{ show_proxy_location = $false; show_mouse_battery = $true; show_download_progress = $false }
 
-$miDash = $menu.Items.Add("Open Dashboard")
+$miDash = $menu.Items.Add("打开管理页面")
 $miDash.add_Click({ Write-Host "[tray] menu: dashboard"; Send-Command 'dashboard' })
-
-$miPause = $menu.Items.Add("Pause / Resume")
-$miPause.add_Click({ Write-Host "[tray] menu: pause"; Send-Command 'pause' })
 
 $menu.Items.Add("-") | Out-Null
 
-$miQuit = $menu.Items.Add("Quit")
+$featureMenu = $menu.Items.Add("任务栏功能")
+$featureMenu.DropDownItems.Add("代理节点位置") | Out-Null
+$miProxy = $featureMenu.DropDownItems[0]
+$miProxy.CheckOnClick = $true
+$miProxy.add_CheckedChanged({ if (-not $script:syncingFeatures) { Send-FeatureCommand 'show_proxy_location' $miProxy.Checked } })
+$featureMenu.DropDownItems.Add("鼠标电量与用时") | Out-Null
+$miBattery = $featureMenu.DropDownItems[1]
+$miBattery.CheckOnClick = $true
+$miBattery.add_CheckedChanged({ if (-not $script:syncingFeatures) { Send-FeatureCommand 'show_mouse_battery' $miBattery.Checked } })
+$featureMenu.DropDownItems.Add("下载进度（开发中）") | Out-Null
+$miDownloads = $featureMenu.DropDownItems[2]
+$miDownloads.CheckOnClick = $true
+$miDownloads.add_CheckedChanged({ if (-not $script:syncingFeatures) { Send-FeatureCommand 'show_download_progress' $miDownloads.Checked } })
+$featureMenu.add_DropDownOpening({
+    $script:syncingFeatures = $true
+    $miProxy.Checked = [bool]$script:lastFeatures.show_proxy_location
+    $miBattery.Checked = [bool]$script:lastFeatures.show_mouse_battery
+    $miDownloads.Checked = [bool]$script:lastFeatures.show_download_progress
+    $script:syncingFeatures = $false
+})
+
+$miQuit = $menu.Items.Add("退出程序")
 $miQuit.add_Click({ Write-Host "[tray] menu: quit"; Send-Command 'quit' })
 
 $ni.ContextMenuStrip = $menu
@@ -104,8 +134,8 @@ $ni.add_MouseDoubleClick({
 })
 
 # ---- Initial balloon tip ----
-$ni.BalloonTipTitle = "Screen Time Tracker"
-$ni.BalloonTipText = "Right-click tray icon for menu. Double-click = Open Dashboard."
+$ni.BalloonTipTitle = "状态栏计时器"
+$ni.BalloonTipText = "右键托盘图标可打开功能开关；双击打开管理页面。"
 $ni.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Info
 $ni.ShowBalloonTip(5000)
 
@@ -297,7 +327,14 @@ $pollTimer.add_Tick({
                 }
 
                 if ($msg.type -eq 'state') {
-                    $st = if ($msg.paused) { 'Paused' } elseif (-not $msg.running) { 'Stopped' } else { 'Tracking' }
+                    $st = if ($msg.paused) { '已暂停' } elseif (-not $msg.running) { '未运行' } else { '正在计时' }
+                    if ($msg.features) {
+                        $script:lastFeatures = @{
+                            show_proxy_location = [bool]$msg.features.show_proxy_location
+                            show_mouse_battery = [bool]$msg.features.show_mouse_battery
+                            show_download_progress = [bool]$msg.features.show_download_progress
+                        }
+                    }
                     $proc = $msg.process
                     if ($proc) {
                         $text2 = "$proc ($($msg.duration))"
@@ -307,7 +344,7 @@ $pollTimer.add_Tick({
                             $text2 += " - $w"
                         }
                     } else {
-                        $text2 = "Screen Time Tracker ($st)"
+                        $text2 = "状态栏计时器（$st）"
                     }
                     if ($text2.Length -gt 127) { $text2 = $text2.Substring(0, 124) + '...' }
                     if ($text2 -ne $script:lastText) {

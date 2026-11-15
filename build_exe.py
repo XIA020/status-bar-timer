@@ -70,8 +70,10 @@ def main() -> int:
     print("\n开始构建 (几分钟)…\n", flush=True)
 
     out_dir = os.path.join(ROOT, "dist")
-    if os.path.isdir(out_dir):
-        shutil.rmtree(out_dir, ignore_errors=True)
+    # Keep dist/data intact: it contains the preview install's position,
+    # feature switches, and local test history. PyInstaller replaces its exe
+    # artifact; deleting the whole directory would reset those user settings.
+    os.makedirs(out_dir, exist_ok=True)
 
     proc = subprocess.run(args, cwd=ROOT)
     if proc.returncode != 0:

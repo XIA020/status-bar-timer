@@ -252,7 +252,7 @@ body { overflow-y: auto; }
   width: 42px;
   height: 42px;
   border-radius: 12px;
-  background: #fff;
+  background: transparent;
   overflow: hidden;
   display: grid;
   place-items: center;
@@ -307,16 +307,14 @@ body { overflow-y: auto; }
 }
 
 /* ---------- 任务栏功能开关 ---------- */
-.settings { margin-top: 22px; }
+.settings { width: 100%; }
 .settings__title { margin: 0 0 10px; font-size: 16px; }
-.setting-row, .setting-path {
+.settings__help { margin: 0 0 12px; color: var(--dim); font-size: 12px; }
+.setting-path {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   min-height: 56px; border-top: 1px solid var(--line);
 }
-.setting-row span { display: grid; gap: 2px; }
-.setting-row b, .setting-path span { font-size: 14px; font-weight: 500; }
-.setting-row small { color: var(--dim); font-size: 12px; }
-.setting-row input { width: 18px; height: 18px; accent-color: var(--accent); }
+.setting-path span { font-size: 14px; font-weight: 500; }
 .setting-path input {
   width: min(58%, 310px); padding: 8px 10px; border: 1px solid var(--line);
   border-radius: 8px; background: var(--bg); color: var(--text); font: inherit;
@@ -325,6 +323,7 @@ body { overflow-y: auto; }
   margin-top: 12px; padding: 8px 14px; border: 0; border-radius: 8px;
   background: var(--accent); color: white; font: inherit; cursor: pointer;
 }
+.settings__actions { display: flex; align-items: center; }
 .settings__status { margin-left: 10px; color: var(--dim); font-size: 12px; }
 
 /* ---------- 悬浮提示 ---------- */

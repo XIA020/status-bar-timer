@@ -19,9 +19,11 @@
   <nav class="tabs" id="tabs">
     <button class="tab is-active" data-kind="day">每天</button>
     <button class="tab" data-kind="week">每周</button>
+    <button class="tab" data-kind="settings">设置</button>
   </nav>
 
   <main class="wrap">
+    <section id="stats-page">
 
     <section class="card">
       <div class="card__label" id="p-label">今天</div>
@@ -47,27 +49,19 @@
       <div class="list__body" id="p-apps"></div>
       <div class="list__empty" id="p-empty" hidden>还没有数据 —— 先正常用一会儿电脑</div>
     </section>
+    </section>
 
-    <section class="settings card">
-      <h2 class="settings__title">任务栏功能</h2>
-      <label class="setting-row">
-        <span><b>代理节点位置</b><small>通过 Windows 系统代理查询出口国家</small></span>
-        <input type="checkbox" id="setting-proxy">
-      </label>
-      <label class="setting-row">
-        <span><b>鼠标电量与使用时间</b><small>适用于 HECATE G3M Pro</small></span>
-        <input type="checkbox" id="setting-battery">
-      </label>
-      <label class="setting-row">
-        <span><b>下载进度</b><small>读取 aria2 下载目录中的 .aria2 记录</small></span>
-        <input type="checkbox" id="setting-downloads">
-      </label>
+    <section id="settings-page" class="settings card" hidden>
+      <h2 class="settings__title">下载进度</h2>
+      <p class="settings__help">只读取所选目录中的 aria2 .aria2 临时记录；Edge、WeGame、Steam 和其他软件的下载不会自动出现在任务栏。</p>
       <label class="setting-path">
         <span>aria2 下载目录</span>
         <input type="text" id="setting-download-dir" placeholder="例如 C:\\Downloads">
       </label>
-      <button class="settings__save" id="settings-save">保存设置</button>
-      <span class="settings__status" id="settings-status"></span>
+      <div class="settings__actions">
+        <button class="settings__save" id="settings-save">保存目录</button>
+        <span class="settings__status" id="settings-status"></span>
+      </div>
     </section>
 
   </main>

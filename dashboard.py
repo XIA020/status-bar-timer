@@ -14,11 +14,13 @@ import os
 import sys
 import json
 import threading
+import time
 import webview
 
 import db
 import paths
 import app_settings
+from single_instance import acquire_instance_lock
 
 HTML_PATH = os.path.join(paths.res_dir(), "dashboard.html")
 HTTP_PORT = None  # set after server starts
@@ -275,6 +277,16 @@ def main():
             pass
         return
 
+    # The HUD and tray can both request the management page. Keep one window
+    # per installation and focus it when another request arrives.
+    try:
+        if not acquire_instance_lock("dashboard", paths.app_dir()):
+            _focus_existing_window()
+            return
+    except Exception as e:
+        print(f"[dashboard] single-instance lock failed: {e}", file=sys.stderr)
+        return
+
     # 启动自己的 HTTP server
     host, port = _start_http_server()
     global HTTP_PORT
@@ -311,6 +323,29 @@ def main():
         threading.Thread(target=_killer, daemon=True).start()
 
     webview.start(debug=False)
+
+
+def _focus_existing_window():
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.BringWindowToTop.argtypes = [wintypes.HWND]
+
+    # The first dashboard process can hold the mutex briefly before WebView
+    # creates its native window. Wait for it, then restore and foreground it.
+    for _ in range(40):
+        hwnd = user32.FindWindowW(None, "状态栏记时器")
+        if hwnd:
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            return
+        time.sleep(0.1)
 
 
 if __name__ == "__main__":

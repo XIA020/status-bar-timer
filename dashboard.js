@@ -210,15 +210,19 @@ function apiPage(kind) {
 }
 
 function switchTo(kind) {
-  if (kind !== 'day' && kind !== 'week') return;
+  if (!['day', 'week', 'settings'].includes(kind)) return;
   if (kind === currentKind) return;
   currentKind = kind;
   lastPayload = '';
   document.querySelectorAll('.tab').forEach(t =>
     t.classList.toggle('is-active', t.dataset.kind === kind));
+  const settingsPage = kind === 'settings';
+  document.getElementById('stats-page').hidden = settingsPage;
+  document.getElementById('settings-page').hidden = !settingsPage;
   hideTip();
   try { history.replaceState(null, '', `#${kind}`); } catch (e) { /* file:// 下可能不支持 */ }
-  load(kind);
+  if (settingsPage) loadSettings();
+  else load(kind);
 }
 
 document.getElementById('tabs').addEventListener('click', ev => {
@@ -228,16 +232,13 @@ document.getElementById('tabs').addEventListener('click', ev => {
 
 window.addEventListener('hashchange', () => {
   const k = (location.hash || '').replace('#', '');
-  if (k === 'day' || k === 'week') switchTo(k);
+  if (['day', 'week', 'settings'].includes(k)) switchTo(k);
 });
 
 window.addEventListener('resize', hideTip);
 
 async function loadSettings() {
   const s = await apiGet('/api/settings');
-  document.getElementById('setting-proxy').checked = !!s.show_proxy_location;
-  document.getElementById('setting-battery').checked = !!s.show_mouse_battery;
-  document.getElementById('setting-downloads').checked = !!s.show_download_progress;
   document.getElementById('setting-download-dir').value = s.download_progress_dir || '';
 }
 
@@ -248,9 +249,6 @@ document.getElementById('settings-save').addEventListener('click', async () => {
     await fetch('/api/settings', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        show_proxy_location: document.getElementById('setting-proxy').checked,
-        show_mouse_battery: document.getElementById('setting-battery').checked,
-        show_download_progress: document.getElementById('setting-downloads').checked,
         download_progress_dir: document.getElementById('setting-download-dir').value
       })
     }).then(async r => { if (!r.ok) throw new Error(await r.text()); return r.json(); });
@@ -262,17 +260,22 @@ document.getElementById('settings-save').addEventListener('click', async () => {
 });
 
 (async function init() {
-  // 支持 #week / #day 直接打开对应视图 (也方便调试和截图)
+  // 支持 #week / #day / #settings 直接打开对应页面
   const k = (location.hash || '').replace('#', '');
-  if (k === 'week' || k === 'day') currentKind = k;
+  if (['week', 'day', 'settings'].includes(k)) currentKind = k;
   document.querySelectorAll('.tab').forEach(t =>
     t.classList.toggle('is-active', t.dataset.kind === currentKind));
-  await load(currentKind);
-  try { await loadSettings(); } catch (e) { console.error('settings load failed', e); }
+  document.getElementById('stats-page').hidden = currentKind === 'settings';
+  document.getElementById('settings-page').hidden = currentKind !== 'settings';
+  if (currentKind === 'settings') {
+    try { await loadSettings(); } catch (e) { console.error('settings load failed', e); }
+  } else {
+    await load(currentKind);
+  }
   setInterval(() => {
     if (document.hidden) return;
     const h = (location.hash || '').replace('#', '');
-    if ((h === 'day' || h === 'week') && h !== currentKind) switchTo(h);
-    else load(currentKind);
+    if (['day', 'week', 'settings'].includes(h) && h !== currentKind) switchTo(h);
+    else if (currentKind !== 'settings') load(currentKind);
   }, POLL_MS);
 })();
